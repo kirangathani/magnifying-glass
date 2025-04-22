@@ -1,0 +1,259 @@
+=== DOM EXPLORER ===
+dom-explorer.ts:29 Max depth set to: 50
+dom-explorer.ts:41 div.workspace-leaf-content 
+dom-explorer.ts:60   Children: 2
+dom-explorer.ts:41   div.view-header [path: 0]
+dom-explorer.ts:60     Children: 3
+dom-explorer.ts:41     div.view-header-left [path: 0→0]
+dom-explorer.ts:60       Children: 1
+dom-explorer.ts:41       div.view-header-nav-buttons [path: 0→0→0]
+dom-explorer.ts:60         Children: 2
+dom-explorer.ts:41         button.clickable-icon [path: 0→0→0→0]
+dom-explorer.ts:60           Children: 1
+dom-explorer.ts:41           svg [path: 0→0→0→0→0]
+dom-explorer.ts:60             Children: 2
+dom-explorer.ts:41             path [path: 0→0→0→0→0→0]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41             path [path: 0→0→0→0→0→1]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41         button.clickable-icon [path: 0→0→0→1]
+dom-explorer.ts:60           Children: 1
+dom-explorer.ts:41           svg [path: 0→0→0→1→0]
+dom-explorer.ts:60             Children: 2
+dom-explorer.ts:41             path [path: 0→0→0→1→0→0]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41             path [path: 0→0→0→1→0→1]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41     div.view-header-title-container.mod-at-start.mod-fade [path: 0→1]
+dom-explorer.ts:60       Children: 2
+dom-explorer.ts:41       div.view-header-title-parent [path: 0→1→0]
+dom-explorer.ts:67         No children
+dom-explorer.ts:41       div.view-header-title [path: 0→1→1]
+dom-explorer.ts:67         No children
+dom-explorer.ts:41     div.view-actions [path: 0→2]
+dom-explorer.ts:60       Children: 3
+dom-explorer.ts:41       button.clickable-icon.view-action.mod-bookmark [path: 0→2→0]
+dom-explorer.ts:60         Children: 1
+dom-explorer.ts:41         svg [path: 0→2→0→0]
+dom-explorer.ts:60           Children: 1
+dom-explorer.ts:41           path [path: 0→2→0→0→0]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41       button.clickable-icon.view-action [path: 0→2→1]
+dom-explorer.ts:60         Children: 1
+dom-explorer.ts:41         svg [path: 0→2→1→0]
+dom-explorer.ts:60           Children: 2
+dom-explorer.ts:41           path [path: 0→2→1→0→0]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41           path [path: 0→2→1→0→1]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41       button.clickable-icon.view-action [path: 0→2→2]
+dom-explorer.ts:60         Children: 1
+dom-explorer.ts:41         svg [path: 0→2→2→0]
+dom-explorer.ts:60           Children: 3
+dom-explorer.ts:41           circle [path: 0→2→2→0→0]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41           circle [path: 0→2→2→0→1]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41           circle [path: 0→2→2→0→2]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41   div.view-content [path: 1]
+dom-explorer.ts:60     Children: 2
+dom-explorer.ts:41     div.markdown-source-view.cm-s-obsidian.mod-cm6.node-insert-event.is-readable-line-width.is-live-preview.is-folding.show-properties [path: 1→0]
+dom-explorer.ts:60       Children: 1
+dom-explorer.ts:41       div.cm-editor.cm-focused.ͼ1.ͼ2 [path: 1→0→0]
+dom-explorer.ts:60         Children: 2
+dom-explorer.ts:41         div.cm-announced [path: 1→0→0→0]
+dom-explorer.ts:67           No children
+dom-explorer.ts:41         div.cm-scroller [path: 1→0→0→1]
+dom-explorer.ts:60           Children: 3
+dom-explorer.ts:41           div.cm-sizer [path: 1→0→0→1→0]
+dom-explorer.ts:60             Children: 4
+dom-explorer.ts:41             div.inline-title [path: 1→0→0→1→0→0]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41             div.metadata-container [path: 1→0→0→1→0→1]
+dom-explorer.ts:60               Children: 3
+dom-explorer.ts:41               div.metadata-error-container [path: 1→0→0→1→0→1→0]
+dom-explorer.ts:67                 No children
+dom-explorer.ts:41               div.metadata-properties-heading [path: 1→0→0→1→0→1→1]
+dom-explorer.ts:60                 Children: 2
+dom-explorer.ts:41                 div.collapse-indicator.collapse-icon [path: 1→0→0→1→0→1→1→0]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   svg [path: 1→0→0→1→0→1→1→0→0]
+dom-explorer.ts:60                     Children: 1
+dom-explorer.ts:41                     path [path: 1→0→0→1→0→1→1→0→0→0]
+dom-explorer.ts:67                       No children
+dom-explorer.ts:41                 div.metadata-properties-title [path: 1→0→0→1→0→1→1→1]
+dom-explorer.ts:67                   No children
+dom-explorer.ts:41               div.metadata-content [path: 1→0→0→1→0→1→2]
+dom-explorer.ts:60                 Children: 2
+dom-explorer.ts:41                 div.metadata-properties [path: 1→0→0→1→0→1→2→0]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   div.metadata-property [path: 1→0→0→1→0→1→2→0→0]
+dom-explorer.ts:60                     Children: 3
+dom-explorer.ts:41                     div.metadata-property-key [path: 1→0→0→1→0→1→2→0→0→0]
+dom-explorer.ts:60                       Children: 2
+dom-explorer.ts:41                       span.metadata-property-icon [path: 1→0→0→1→0→1→2→0→0→0→0]
+dom-explorer.ts:60                         Children: 1
+dom-explorer.ts:41                         svg [path: 1→0→0→1→0→1→2→0→0→0→0→0]
+dom-explorer.ts:60                           Children: 2
+dom-explorer.ts:41                           polyline [path: 1→0→0→1→0→1→2→0→0→0→0→0→0]
+dom-explorer.ts:67                             No children
+dom-explorer.ts:41                           path [path: 1→0→0→1→0→1→2→0→0→0→0→0→1]
+dom-explorer.ts:67                             No children
+dom-explorer.ts:41                       input.metadata-property-key-input [path: 1→0→0→1→0→1→2→0→0→0→1]
+dom-explorer.ts:67                         No children
+dom-explorer.ts:41                     div.metadata-property-value [path: 1→0→0→1→0→1→2→0→0→1]
+dom-explorer.ts:60                       Children: 1
+dom-explorer.ts:41                       div.multi-select-container [path: 1→0→0→1→0→1→2→0→0→1→0]
+dom-explorer.ts:60                         Children: 2
+dom-explorer.ts:41                         div.multi-select-pill [path: 1→0→0→1→0→1→2→0→0→1→0→0]
+dom-explorer.ts:60                           Children: 2
+dom-explorer.ts:41                           div.multi-select-pill-content [path: 1→0→0→1→0→1→2→0→0→1→0→0→0]
+dom-explorer.ts:67                             No children
+dom-explorer.ts:41                           div.multi-select-pill-remove-button [path: 1→0→0→1→0→1→2→0→0→1→0→0→1]
+dom-explorer.ts:60                             Children: 1
+dom-explorer.ts:41                             svg [path: 1→0→0→1→0→1→2→0→0→1→0→0→1→0]
+dom-explorer.ts:60                               Children: 2
+dom-explorer.ts:41                               path [path: 1→0→0→1→0→1→2→0→0→1→0→0→1→0→0]
+dom-explorer.ts:67                                 No children
+dom-explorer.ts:41                               path [path: 1→0→0→1→0→1→2→0→0→1→0→0→1→0→1]
+dom-explorer.ts:67                                 No children
+dom-explorer.ts:41                         div.multi-select-input [path: 1→0→0→1→0→1→2→0→0→1→0→1]
+dom-explorer.ts:67                           No children
+dom-explorer.ts:41                     div.clickable-icon.metadata-property-warning-icon [path: 1→0→0→1→0→1→2→0→0→2]
+dom-explorer.ts:60                       Children: 1
+dom-explorer.ts:41                       svg [path: 1→0→0→1→0→1→2→0→0→2→0]
+dom-explorer.ts:60                         Children: 3
+dom-explorer.ts:41                         path [path: 1→0→0→1→0→1→2→0→0→2→0→0]
+dom-explorer.ts:67                           No children
+dom-explorer.ts:41                         path [path: 1→0→0→1→0→1→2→0→0→2→0→1]
+dom-explorer.ts:67                           No children
+dom-explorer.ts:41                         path [path: 1→0→0→1→0→1→2→0→0→2→0→2]
+dom-explorer.ts:67                           No children
+dom-explorer.ts:41                 div.metadata-add-button.text-icon-button [path: 1→0→0→1→0→1→2→1]
+dom-explorer.ts:60                   Children: 2
+dom-explorer.ts:41                   span.text-button-icon [path: 1→0→0→1→0→1→2→1→0]
+dom-explorer.ts:60                     Children: 1
+dom-explorer.ts:41                     svg [path: 1→0→0→1→0→1→2→1→0→0]
+dom-explorer.ts:60                       Children: 2
+dom-explorer.ts:41                       path [path: 1→0→0→1→0→1→2→1→0→0→0]
+dom-explorer.ts:67                         No children
+dom-explorer.ts:41                       path [path: 1→0→0→1→0→1→2→1→0→0→1]
+dom-explorer.ts:67                         No children
+dom-explorer.ts:41                   span.text-button-label [path: 1→0→0→1→0→1→2→1→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41             div.cm-contentContainer [path: 1→0→0→1→0→2]
+dom-explorer.ts:60               Children: 1
+dom-explorer.ts:41               div.cm-content.cm-lineWrapping [path: 1→0→0→1→0→2→0]
+dom-explorer.ts:52                 Children: 13 (showing first 10)
+dom-explorer.ts:41                 div [path: 1→0→0→1→0→2→0→0]
+dom-explorer.ts:67                   No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→1]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   br [path: 1→0→0→1→0→2→0→1→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→2]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   br [path: 1→0→0→1→0→2→0→2→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→3]
+dom-explorer.ts:60                   Children: 7
+dom-explorer.ts:41                   img.cm-widgetBuffer [path: 1→0→0→1→0→2→0→3→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span [path: 1→0→0→1→0→2→0→3→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   img.cm-widgetBuffer [path: 1→0→0→1→0→2→0→3→2]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-em [path: 1→0→0→1→0→2→0→3→3]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   img.cm-widgetBuffer [path: 1→0→0→1→0→2→0→3→4]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span [path: 1→0→0→1→0→2→0→3→5]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   img.cm-widgetBuffer [path: 1→0→0→1→0→2→0→3→6]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→4]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   br [path: 1→0→0→1→0→2→0→4→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-active.cm-line [path: 1→0→0→1→0→2→0→5]
+dom-explorer.ts:60                   Children: 3
+dom-explorer.ts:41                   span.cm-em.cm-formatting.cm-formatting-em [path: 1→0→0→1→0→2→0→5→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-em [path: 1→0→0→1→0→2→0→5→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-em.cm-formatting.cm-formatting-em [path: 1→0→0→1→0→2→0→5→2]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→6]
+dom-explorer.ts:52                   Children: 36 (showing first 10)
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→2]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→3]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→4]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→5]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→6]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→7]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→8]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→6→9]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:58                   ... (26 more children)
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→7]
+dom-explorer.ts:60                   Children: 1
+dom-explorer.ts:41                   br [path: 1→0→0→1→0→2→0→7→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→8]
+dom-explorer.ts:60                   Children: 3
+dom-explorer.ts:41                   span.cm-em.cm-formatting.cm-formatting-em [path: 1→0→0→1→0→2→0→8→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-em [path: 1→0→0→1→0→2→0→8→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-em.cm-formatting.cm-formatting-em [path: 1→0→0→1→0→2→0→8→2]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                 div.cm-line [path: 1→0→0→1→0→2→0→9]
+dom-explorer.ts:52                   Children: 42 (showing first 10)
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→0]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→1]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→2]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→3]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→4]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→5]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→6]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→7]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→8]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:41                   span.cm-formatting.cm-formatting-link.cm-hmd-barelink.cm-link [path: 1→0→0→1→0→2→0→9→9]
+dom-explorer.ts:67                     No children
+dom-explorer.ts:58                   ... (32 more children)
+dom-explorer.ts:58                 ... (3 more children)
+dom-explorer.ts:41             div.embedded-backlinks [path: 1→0→0→1→0→3]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41           div.cm-layer.cm-layer-above.cm-cursorLayer [path: 1→0→0→1→1]
+dom-explorer.ts:60             Children: 1
+dom-explorer.ts:41             div.cm-cursor.cm-cursor-primary [path: 1→0→0→1→1→0]
+dom-explorer.ts:67               No children
+dom-explorer.ts:41           div.cm-layer.cm-selectionLayer [path: 1→0→0→1→2]
+dom-explorer.ts:67             No children
+dom-explorer.ts:41     div.markdown-reading-view [path: 1→1]
+dom-explorer.ts:60       Children: 1
+dom-explorer.ts:41       div.markdown-preview-view.markdown-rendered.node-insert-event.is-readable-line-width.allow-fold-headings.allow-fold-lists.show-indentation-guide.show-properties [path: 1→1→0]
+dom-explorer.ts:60         Children: 1
+dom-explorer.ts:41         div.markdown-preview-sizer.markdown-preview-section [path: 1→1→0→0]
+dom-explorer.ts:67           No children
