@@ -1,6 +1,8 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
+import fs from "fs";
+import path from "path";
 
 const banner =
 `/*
@@ -10,6 +12,34 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === "production");
+
+// Copy PDF.js worker to output directory (same folder as main.js)
+const copyPdfWorker = {
+	name: 'copy-pdf-worker',
+	setup(build) {
+		build.onEnd(() => {
+			// pdfjs-dist@2.x ships classic workers as .js (better compatibility with older Electron)
+			const candidates = [
+				path.resolve('node_modules', 'pdfjs-dist', 'build', 'pdf.worker.min.js'),
+				path.resolve('node_modules', 'pdfjs-dist', 'build', 'pdf.worker.js'),
+			];
+			const workerDest = path.resolve('pdf.worker.js');
+			const workerSrc = candidates.find(p => fs.existsSync(p));
+
+			if (!workerSrc) {
+				console.warn('[copy-pdf-worker] Could not find pdf.worker(.min).js in pdfjs-dist');
+				return;
+			}
+
+			try {
+				fs.copyFileSync(workerSrc, workerDest);
+				console.log('[copy-pdf-worker] Copied', workerSrc, '->', workerDest);
+			} catch (e) {
+				console.warn('[copy-pdf-worker] Failed to copy worker:', e);
+			}
+		});
+	}
+};
 
 const context = await esbuild.context({
 	banner: {
@@ -39,6 +69,7 @@ const context = await esbuild.context({
 	treeShaking: true,
 	outfile: "main.js",
 	minify: prod,
+	plugins: [copyPdfWorker],
 });
 
 if (prod) {

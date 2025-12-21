@@ -1,186 +1,288 @@
 import { ItemView, WorkspaceLeaf, TFile } from 'obsidian';
 
-/**
- * Unique identifier for our custom view type
- */
 export const VIEW_TYPE_EXAMPLE = 'example-view';
 
-/**
- * Example view that demonstrates how to create a custom view in Obsidian
- */
+function normalizePluginDir(input: string): string {
+    // Handle values like:
+    // - "magnifying-glass"
+    // - ".obsidian/plugins/magnifying-glass"
+    // - ".obsidian\\plugins\\magnifying-glass"
+    const s = String(input ?? '').replace(/\\/g, '/');
+    const parts = s.split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : s;
+}
+
+async function createPdfJsWorkerBlobUrl(pluginDir: string, basePath?: string): Promise<string | undefined> {
+    // Desktop-only: use Node fs to read the worker file from the plugin folder and create a blob URL.
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const path = require('path');
+
+        if (!basePath) {
+            console.warn('[pdf-worker] basePath is undefined');
+            return undefined;
+        }
+
+        const normalizedDir = normalizePluginDir(pluginDir);
+        const workerPath = path.join(basePath, '.obsidian', 'plugins', normalizedDir, 'pdf.worker.js');
+        if (!fs.existsSync(workerPath)) {
+            console.warn('[pdf-worker] worker not found at', workerPath);
+            return undefined;
+        }
+
+        const workerCode = fs.readFileSync(workerPath, 'utf8');
+        // Use a blob URL to avoid CORS restrictions from `app://obsidian.md` when loading module workers.
+        const blob = new Blob([workerCode], { type: 'text/javascript' });
+        return URL.createObjectURL(blob);
+    } catch (e) {
+        console.warn('[pdf-worker] failed to build workerSrc:', e);
+        return undefined;
+    }
+}
+
+async function resolvePdfWorkerSrc(
+    pluginDirCandidates: string[],
+    basePath?: string
+): Promise<string | undefined> {
+    for (const dir of pluginDirCandidates) {
+        if (!dir) continue;
+        const src = await createPdfJsWorkerBlobUrl(dir, basePath);
+        if (src) return src;
+    }
+    return undefined;
+}
+
+// Lazy load PDF viewer to avoid import issues
+let PDFViewerComponent: any = null;
+async function getPDFViewerComponent() {
+    if (!PDFViewerComponent) {
+        const module = await import('./pdf-viewer');
+        PDFViewerComponent = module.PDFViewerComponent;
+    }
+    return PDFViewerComponent;
+}
+
 export class ExampleView extends ItemView {
     private pdfContainer: HTMLElement;
-    private currentPdfUrl: string | null = null;
+    private pdfViewer: any = null;
+    private controlsSection: HTMLElement;
+    private pluginId: string;
+    private pluginDir: string;
 
-    /**
-     * Constructs a new ExampleView
-     */
-    constructor(leaf: WorkspaceLeaf) {
+    constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
+        this.pluginId = opts.pluginId;
+        this.pluginDir = opts.pluginDir;
     }
 
-    /**
-     * Returns the type of the view
-     */
     getViewType(): string {
         return VIEW_TYPE_EXAMPLE;
     }
 
-    /**
-     * Returns the display text for the view
-     */
     getDisplayText(): string {
-        return 'Example View';
+        return 'PDF Viewer';
     }
 
-    /**
-     * Called when the view is opened
-     */
+    private getContextMenuActions(): any[] {
+        return [
+            {
+                id: 'copy',
+                label: 'Copy',
+                icon: '📋',
+                callback: (text: string) => {
+                    navigator.clipboard.writeText(text);
+                    console.log('Copied to clipboard:', text);
+                }
+            },
+            {
+                id: 'copy-to-note',
+                label: 'Copy to Active Note',
+                icon: '📝',
+                callback: (text: string) => {
+                    this.copyToActiveNote(text);
+                }
+            },
+            {
+                id: 'create-note',
+                label: 'Create Note from Selection',
+                icon: '➕',
+                callback: (text: string) => {
+                    this.createNoteFromSelection(text);
+                }
+            }
+        ];
+    }
+
+    private async copyToActiveNote(text: string): Promise<void> {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && activeFile.extension === 'md') {
+            const content = await this.app.vault.read(activeFile);
+            await this.app.vault.modify(activeFile, content + '\n\n' + text);
+            console.log('Added to note:', activeFile.path);
+        } else {
+            console.log('No active markdown file');
+        }
+    }
+
+    private async createNoteFromSelection(text: string): Promise<void> {
+        const fileName = `PDF Extract ${Date.now()}.md`;
+        await this.app.vault.create(fileName, text);
+        console.log('Created note:', fileName);
+    }
+
     async onOpen(): Promise<void> {
-        // Clear the container element
-        const container = this.containerEl.children[1];
-        container.empty();
-        
-        // Create main content wrapper
-        const mainContent = container.createEl('div', { cls: 'main-content-wrapper' });
-        mainContent.style.display = 'flex';
-        mainContent.style.flexDirection = 'column';
-        mainContent.style.height = '100%';
-        
-        // Create top section for controls
-        const controlsSection = mainContent.createEl('div', { cls: 'controls-section' });
-        
-        // Create a simple header
-        const headerEl = controlsSection.createEl('h2', { text: 'Example View' });
-        
-        // Add a paragraph with some text
-        controlsSection.createEl('p', {
-            text: 'This is a minimal example of a custom view in Obsidian.'
-        });
-        
-        // Add a button that does something
-        const buttonEl = controlsSection.createEl('button', {
-            text: 'Click Me',
-            cls: 'mod-cta'
-        });
-        
-        // Add a click event to the button
-        buttonEl.addEventListener('click', () => {
-            const timestamp = new Date().toLocaleTimeString();
-            controlsSection.createEl('p', {
-                text: `Button clicked at ${timestamp}`,
-                cls: 'click-result'
+        console.log('=== PDF VIEWER ONOPEN START ===');
+        try {
+            const container = this.contentEl;
+            container.empty();
+            container.addClass('pdf-view-container');
+            // Force sane layout so content can't end up effectively zero-height/invisible due to parent styles.
+            // (We keep this minimal; visuals are handled by styles.css)
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.height = '100%';
+            container.style.overflow = 'hidden';
+            container.style.minHeight = '0';
+            
+            // Create controls section
+            this.controlsSection = container.createEl('div', { cls: 'controls-section' });
+            
+            // Header
+            this.controlsSection.createEl('h2', { text: 'PDF Viewer' });
+            
+            // PDF input section
+            const pdfInputSection = this.controlsSection.createEl('div', { cls: 'pdf-input-section' });
+            
+            pdfInputSection.createEl('label', {
+                text: 'PDF Path (relative to vault root):',
+                cls: 'pdf-input-label'
             });
-        });
 
-        // Add a horizontal rule for separation
-        controlsSection.createEl('hr');
+            const inputContainer = pdfInputSection.createEl('div', { cls: 'pdf-input-container' });
+            
+            const pdfInput = inputContainer.createEl('input', {
+                type: 'text',
+                placeholder: 'e.g., My_PDF.pdf',
+                cls: 'pdf-path-input'
+            });
 
-        // Create PDF input section
-        const pdfInputSection = controlsSection.createEl('div', { cls: 'pdf-input-section' });
-        
-        // Add label for the input
-        pdfInputSection.createEl('label', {
-            text: 'PDF Path (relative to vault root):',
-            cls: 'pdf-input-label'
-        });
+            const loadButton = inputContainer.createEl('button', {
+                text: 'Load PDF',
+                cls: 'mod-cta'
+            });
 
-        // Create input container with flex layout
-        const inputContainer = pdfInputSection.createEl('div', { cls: 'pdf-input-container' });
-        
-        // Add the input field
-        const pdfInput = inputContainer.createEl('input', {
-            type: 'text',
-            placeholder: 'e.g., My_PDF.pdf',
-            cls: 'pdf-path-input'
-        });
+            // Zoom controls
+            const zoomContainer = pdfInputSection.createEl('div', { cls: 'zoom-controls' });
+            
+            const zoomOutBtn = zoomContainer.createEl('button', { text: '−', cls: 'zoom-btn' });
+            const zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' });
+            const zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' });
 
-        // Add a load button
-        const loadButton = inputContainer.createEl('button', {
-            text: 'Load PDF',
-            cls: 'mod-cta'
-        });
+            // Create PDF container
+            this.pdfContainer = container.createEl('div', { cls: 'pdf-viewer-container' });
+            this.pdfContainer.style.minHeight = '0';
 
-        // Create container for PDF viewer
-        this.pdfContainer = mainContent.createEl('div', { cls: 'pdf-viewer-container' });
-        this.pdfContainer.style.display = 'none';
-        this.pdfContainer.style.flex = '1';
-        this.pdfContainer.style.marginTop = '20px';
-        this.pdfContainer.style.position = 'relative';
+            // Load button handler
+            loadButton.addEventListener('click', async () => {
+                const pdfPath = pdfInput.value.trim();
+                if (!pdfPath) {
+                    this.showMessage('Please enter a PDF path', 'error');
+                    return;
+                }
 
-        // Add click event to the load button
-        loadButton.addEventListener('click', async () => {
-            const pdfPath = pdfInput.value.trim();
-            if (pdfPath) {
                 try {
-                    // Get the file from the vault
+                    console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
                     
                     if (file instanceof TFile && file.extension === 'pdf') {
-                        // Clear previous PDF viewer if any
-                        this.pdfContainer.empty();
-                        
-                        // Revoke previous blob URL if it exists
-                        if (this.currentPdfUrl) {
-                            URL.revokeObjectURL(this.currentPdfUrl);
-                            this.currentPdfUrl = null;
-                        }
-
-                        // Get the PDF data as an array buffer
                         const pdfData = await this.app.vault.readBinary(file);
+                        console.log('PDF data loaded, size:', pdfData.byteLength);
                         
-                        // Create a blob URL for the PDF
-                        const blob = new Blob([pdfData], { type: 'application/pdf' });
-                        this.currentPdfUrl = URL.createObjectURL(blob);
+                        // Destroy previous viewer
+                        if (this.pdfViewer) {
+                            this.pdfViewer.destroy();
+                        }
                         
-                        // Create iframe for PDF viewer
-                        const iframe = this.pdfContainer.createEl('iframe');
-                        iframe.style.width = '100%';
-                        iframe.style.height = '100%';
-                        iframe.style.position = 'absolute';
-                        iframe.style.border = 'none';
-                        iframe.src = this.currentPdfUrl;
+                        // Create new viewer (lazy loaded)
+                        const ViewerClass = await getPDFViewerComponent();
+                        // IMPORTANT: `plugin:` URLs can't be loaded as module workers from `app://obsidian.md` (CORS).
+                        // Use a blob URL created from the on-disk worker file instead.
+                        const adapter: any = this.app.vault.adapter as any;
+                        const basePath =
+                            (typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : undefined) ??
+                            (adapter?.basePath as string | undefined);
+                        const runtimeDir =
+                            (this.app as any)?.plugins?.plugins?.[this.pluginId]?.manifest?.dir as string | undefined;
+                        const candidates: string[] = Array.from(
+                            new Set([this.pluginDir, runtimeDir, this.pluginId].filter((v): v is string => Boolean(v)))
+                        );
+                        const workerSrc = await resolvePdfWorkerSrc(candidates, basePath);
+                        console.log('[pdf-worker] basePath=', basePath, 'candidates=', candidates, 'workerSrc=', workerSrc);
+                        if (!workerSrc) {
+                            throw new Error(`[pdf-worker] Could not resolve workerSrc. basePath=${basePath} candidates=${candidates.join(',')}`);
+                        }
+                        this.pdfViewer = new ViewerClass(
+                            this.pdfContainer,
+                            this.getContextMenuActions(),
+                            { workerSrc, revokeWorkerSrc: true }
+                        );
                         
-                        // Show the PDF container
-                        this.pdfContainer.style.display = 'block';
-                        this.pdfContainer.style.height = '600px';
+                        // Load the PDF
+                        await this.pdfViewer.loadPdf(pdfData);
                         
-                        // Show success message
-                        const successMsg = controlsSection.createEl('p', {
-                            text: `Successfully loaded PDF: ${pdfPath}`,
-                            cls: 'success-message'
-                        });
+                        // Show success
+                        this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
                         
-                        // Remove success message after 3 seconds
-                        setTimeout(() => successMsg.remove(), 3000);
+                        // Update zoom label
+                        zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
                     } else {
-                        // Show error message
-                        const errorMsg = controlsSection.createEl('p', {
-                            text: `Error: ${pdfPath} is not a valid PDF file`,
-                            cls: 'error-message'
-                        });
-                        setTimeout(() => errorMsg.remove(), 3000);
+                        this.showMessage(`Error: ${pdfPath} is not a valid PDF file`, 'error');
                     }
-                } catch (error) {
-                    // Show error message
-                    const errorMsg = controlsSection.createEl('p', {
-                        text: `Error loading PDF: ${error.message}`,
-                        cls: 'error-message'
-                    });
-                    setTimeout(() => errorMsg.remove(), 3000);
+                } catch (error: any) {
+                    console.error('Error loading PDF:', error);
+                    this.showMessage(`Error: ${error.message}`, 'error');
                 }
-            }
-        });
+            });
+
+            // Zoom handlers
+            zoomOutBtn.addEventListener('click', async () => {
+                if (this.pdfViewer) {
+                    const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
+                    await this.pdfViewer.setScale(newScale);
+                    zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                }
+            });
+
+            zoomInBtn.addEventListener('click', async () => {
+                if (this.pdfViewer) {
+                    const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
+                    await this.pdfViewer.setScale(newScale);
+                    zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                }
+            });
+            
+            console.log('PDF VIEWER contentEl innerHTML:', container.innerHTML);
+            console.log('=== PDF VIEWER ONOPEN COMPLETE ===');
+            
+        } catch (error) {
+            console.error('PDF Viewer onOpen error:', error);
+        }
     }
 
-    /**
-     * Called when the view is closed
-     */
+    private showMessage(text: string, type: 'success' | 'error'): void {
+        const msg = this.controlsSection.createEl('p', {
+            text,
+            cls: `${type}-message`
+        });
+        setTimeout(() => msg.remove(), 3000);
+    }
+
     async onClose(): Promise<void> {
-        // Clean up blob URL when closing
-        if (this.currentPdfUrl) {
-            URL.revokeObjectURL(this.currentPdfUrl);
-            this.currentPdfUrl = null;
+        if (this.pdfViewer) {
+            this.pdfViewer.destroy();
+            this.pdfViewer = null;
         }
     }
 }

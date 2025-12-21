@@ -1,8 +1,199 @@
 /*
+ * Styles for the PDF Viewer plugin
+ */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Make the view reliably lay out like a normal Obsidian scrollable pane */
+.pdf-view-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
 
-If your plugin does not need CSS, delete this file.
+/* Controls section */
+.controls-section {
+    padding: 15px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    position: relative;
+    z-index: 2;
+    pointer-events: auto;
+}
 
-*/
+.controls-section h2 {
+    margin: 0 0 10px 0;
+}
+
+.pdf-input-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pdf-input-container {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.pdf-path-input {
+    flex: 1;
+    min-width: 200px;
+    padding: 6px 10px;
+}
+
+/* Zoom controls */
+.zoom-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.zoom-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+.zoom-label {
+    min-width: 50px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* PDF viewer container */
+.pdf-viewer-container {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+    background: var(--background-secondary);
+    margin-top: 10px;
+    position: relative;
+    z-index: 1;
+}
+
+/* PDF viewer component */
+.pdf-viewer {
+    width: 100%;
+    min-height: 100%;
+}
+
+/* Scroll container for pages */
+.pdf-scroll-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+}
+
+/* Individual page container */
+.pdf-page-container {
+    position: relative;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Canvas for PDF rendering */
+.pdf-page-canvas {
+    display: block;
+}
+
+/* Text layer for selection */
+.pdf-text-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    line-height: 1;
+    user-select: text;
+}
+
+.pdf-text-layer span {
+    position: absolute;
+    white-space: pre;
+    color: transparent;
+    pointer-events: all;
+    cursor: text;
+    user-select: text;
+}
+
+/* PDF.js text layer class (used when renderTextLayer is available) */
+.textLayer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    line-height: 1;
+    user-select: text;
+}
+
+.textLayer span {
+    position: absolute;
+    white-space: pre;
+    transform-origin: 0% 0%;
+    color: transparent;
+    cursor: text;
+    user-select: text;
+}
+
+.pdf-text-layer span::selection {
+    background: rgba(0, 100, 255, 0.3);
+}
+
+/* Context menu */
+.pdf-context-menu {
+    position: fixed;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    min-width: 180px;
+    padding: 4px 0;
+    z-index: 10000;
+}
+
+.pdf-context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-normal);
+}
+
+.pdf-context-menu-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.pdf-context-menu-icon {
+    font-size: 14px;
+    width: 20px;
+    text-align: center;
+}
+
+.pdf-context-menu-label {
+    flex: 1;
+}
+
+/* Messages */
+.success-message {
+    color: var(--text-success);
+    font-size: 12px;
+    margin: 8px 0 0 0;
+}
+
+.error-message {
+    color: var(--text-error);
+    font-size: 12px;
+    margin: 8px 0 0 0;
+}

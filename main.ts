@@ -10,7 +10,9 @@ export default class MinimalExamplePlugin extends Plugin {
         // Register the custom view
         this.registerView(
             VIEW_TYPE_EXAMPLE,
-            (leaf) => new ExampleView(leaf)
+            // NOTE: Obsidian's runtime manifest includes `dir` (folder name under .obsidian/plugins).
+            // This can differ from `id` during development if the folder name doesn't match.
+            (leaf) => new ExampleView(leaf, { pluginId: this.manifest.id, pluginDir: (this.manifest as any).dir ?? this.manifest.id })
         );
         // Add ribbon icon to open the view
         this.addRibbonIcon(
