@@ -8,6 +8,7 @@ type PdfAnnotation = {
     id: string;
     createdAt: number;
     selectedText: string;
+    commentText?: string;
     anchor: { pageNumber: number; yNorm: number };
     highlights: PageRects[];
 };
@@ -88,6 +89,7 @@ export class ExampleView extends ItemView {
     private commentsTrack: HTMLElement;
     private annotations: PdfAnnotation[] = [];
     private currentPdfPath: string | null = null;
+    private dirtyAnnotationIds: Set<string> = new Set();
     private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
@@ -414,6 +416,44 @@ export class ExampleView extends ItemView {
             const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
             // Align the TOP of the marker to the computed pixel Y
             marker.style.top = `${topPx}px`;
+
+            // Simple comment editor UI (small textarea + footer Save button)
+            const body = marker.createEl('div', { cls: 'pdf-comment-marker-body' });
+            body.createEl('div', {
+                cls: 'pdf-comment-marker-snippet',
+                text: a.selectedText.length > 120 ? `${a.selectedText.slice(0, 120)}…` : a.selectedText,
+            });
+
+            const textarea = body.createEl('textarea', {
+                cls: 'pdf-comment-textarea',
+                attr: {
+                    rows: '3',
+                    maxlength: '280',
+                    placeholder: 'Add a comment…',
+                },
+            });
+            textarea.value = a.commentText ?? '';
+            const footer = marker.createEl('div', { cls: 'pdf-comment-marker-footer' });
+            const saveBtn = footer.createEl('button', { cls: 'pdf-comment-save-btn', text: 'Save' });
+            saveBtn.disabled = !this.dirtyAnnotationIds.has(a.id);
+
+            textarea.addEventListener('input', () => {
+                a.commentText = textarea.value;
+                this.dirtyAnnotationIds.add(a.id);
+                saveBtn.disabled = false;
+            });
+
+            saveBtn.addEventListener('click', async () => {
+                saveBtn.disabled = true;
+                try {
+                    await this.saveAnnotationsForCurrentPdf();
+                    this.dirtyAnnotationIds.delete(a.id);
+                } catch (e) {
+                    console.warn('[comment] Failed to save:', e);
+                    // If save failed, allow retry
+                    saveBtn.disabled = false;
+                }
+            });
         }
     }
 
@@ -478,9 +518,11 @@ export class ExampleView extends ItemView {
             }
 
             this.annotations = parsed.annotations;
+            this.dirtyAnnotationIds.clear();
         } catch (e) {
             console.warn('[annotations] Failed to load annotations:', e);
             this.annotations = [];
+            this.dirtyAnnotationIds.clear();
         }
     }
 
@@ -564,15 +606,18 @@ export class ExampleView extends ItemView {
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
             createdAt: Date.now(),
             selectedText: text,
+            commentText: '',
             anchor,
             highlights,
         };
 
         this.annotations.push(ann);
+        this.dirtyAnnotationIds.add(ann.id);
         this.updateCommentsTrackHeight();
         this.renderCommentMarkers();
         this.renderHighlights();
         await this.saveAnnotationsForCurrentPdf();
+        this.dirtyAnnotationIds.delete(ann.id);
 
         console.log('[comment]', {
             selectedText: text,
