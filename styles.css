@@ -112,6 +112,21 @@
     position: relative;
 }
 
+.pdf-comments-track {
+    position: relative;
+    min-height: 100%;
+}
+
+/* Purple marker for a comment (placeholder) */
+.pdf-comment-marker {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    height: 240px;
+    background: #7c3aed;
+    border-radius: 10px;
+}
+
 /* PDF viewer component */
 .pdf-viewer {
     width: 100%;

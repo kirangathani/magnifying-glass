@@ -70,6 +70,9 @@ export class ExampleView extends ItemView {
     private controlsSection: HTMLElement;
     private viewerRow: HTMLElement;
     private commentsPane: HTMLElement;
+    private commentsTrack: HTMLElement;
+    private commentAnchors: Array<{ id: string; pageNumber: number; yNorm: number; createdAt: number }> = [];
+    private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
 
@@ -108,6 +111,17 @@ export class ExampleView extends ItemView {
                         console.log('[comment] No selection anchor available');
                         return;
                     }
+
+                    // Store anchor for marker rendering (no real comments yet)
+                    this.commentAnchors.push({
+                        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                        pageNumber: anchor.pageNumber,
+                        yNorm: anchor.yNorm,
+                        createdAt: Date.now(),
+                    });
+                    this.updateCommentsTrackHeight();
+                    this.renderCommentMarkers();
+
                     console.log('[comment]', {
                         selectedText: text,
                         pageNumber: anchor.pageNumber,
@@ -220,6 +234,24 @@ export class ExampleView extends ItemView {
 
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
+            this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+
+            // Scroll sync so comment markers align with PDF content while scrolling
+            const syncScroll = (from: 'pdf' | 'comments') => {
+                if (this.isSyncingScroll) return;
+                this.isSyncingScroll = true;
+                try {
+                    if (from === 'pdf') {
+                        this.commentsPane.scrollTop = this.pdfContainer.scrollTop;
+                    } else {
+                        this.pdfContainer.scrollTop = this.commentsPane.scrollTop;
+                    }
+                } finally {
+                    this.isSyncingScroll = false;
+                }
+            };
+            this.pdfContainer.addEventListener('scroll', () => syncScroll('pdf'), { passive: true });
+            this.commentsPane.addEventListener('scroll', () => syncScroll('comments'), { passive: true });
 
             // Load button handler
             loadButton.addEventListener('click', async () => {
@@ -232,6 +264,9 @@ export class ExampleView extends ItemView {
                 try {
                     isLoadingPdf = true;
                     updateZoomButtonsState();
+                    // Reset markers for now when loading a new PDF
+                    this.commentAnchors = [];
+                    this.renderCommentMarkers();
 
                     console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
@@ -272,6 +307,8 @@ export class ExampleView extends ItemView {
                         // Load the PDF
                         await this.pdfViewer.loadPdf(pdfData);
                         // Pages are fully rendered when loadPdf resolves
+                        this.updateCommentsTrackHeight();
+                        this.renderCommentMarkers();
                         
                         // Show success
                         this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
@@ -292,6 +329,8 @@ export class ExampleView extends ItemView {
                 } finally {
                     isLoadingPdf = false;
                     updateZoomButtonsState();
+                    this.updateCommentsTrackHeight();
+                    this.renderCommentMarkers();
                 }
             });
 
@@ -307,6 +346,8 @@ export class ExampleView extends ItemView {
                     } finally {
                         isZooming = false;
                         updateZoomButtonsState();
+                        this.updateCommentsTrackHeight();
+                        this.renderCommentMarkers();
                     }
                 }
             });
@@ -322,6 +363,8 @@ export class ExampleView extends ItemView {
                     } finally {
                         isZooming = false;
                         updateZoomButtonsState();
+                        this.updateCommentsTrackHeight();
+                        this.renderCommentMarkers();
                     }
                 }
             });
@@ -346,6 +389,29 @@ export class ExampleView extends ItemView {
         if (this.pdfViewer) {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
+        }
+    }
+
+    private updateCommentsTrackHeight(): void {
+        if (!this.commentsTrack || !this.pdfContainer) return;
+        // Keep the comments track the same scrollable height as the PDF container content
+        this.commentsTrack.style.height = `${this.pdfContainer.scrollHeight}px`;
+    }
+
+    private renderCommentMarkers(): void {
+        if (!this.commentsTrack || !this.pdfContainer) return;
+        this.commentsTrack.empty();
+
+        for (const a of this.commentAnchors) {
+            const pageEl = this.pdfContainer.querySelector(
+                `.pdf-page-container[data-page-number="${a.pageNumber}"]`
+            ) as HTMLElement | null;
+            if (!pageEl) continue;
+
+            const topPx = pageEl.offsetTop + (a.yNorm * pageEl.offsetHeight);
+            const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
+            // Align the TOP of the marker to the computed pixel Y
+            marker.style.top = `${topPx}px`;
         }
     }
 
