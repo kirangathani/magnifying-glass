@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, MarkdownView } from "obsidian";
+import { Plugin, MarkdownView } from "obsidian";
 import { VIEW_TYPE_EXAMPLE, ExampleView } from './view';
   
 /**

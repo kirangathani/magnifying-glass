@@ -92,7 +92,6 @@ export class ExampleView extends ItemView {
     private annotations: PdfAnnotation[] = [];
     private currentPdfPath: string | null = null;
     private currentPdfCommentsFolder: string | null = null;
-    private dirtyAnnotationIds: Set<string> = new Set();
     private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
@@ -510,7 +509,6 @@ export class ExampleView extends ItemView {
             marker.dataset.annotationId = a.id;
             marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
             marker.addEventListener('click', () => {
-                console.log('[mg] comment selected:', a.id, 'notePath=', a.notePath);
                 this.selectedAnnotationId = a.id;
                 this.renderCommentMarkers();
             });
@@ -520,7 +518,6 @@ export class ExampleView extends ItemView {
 
             // Inline editor inside the selected comment box (no highlighted quote shown here)
             if (a.id === this.selectedAnnotationId) {
-                console.log('[mg] rendering inline editor for:', a.id);
                 const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
                 const textarea = editor.createEl('textarea', {
                     cls: 'pdf-comment-inline-textarea',
@@ -543,7 +540,6 @@ export class ExampleView extends ItemView {
                     const md = await this.app.vault.read(af);
                     const { frontmatter, body } = this.stripFrontmatter(md);
                     const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
-                    console.log('[mg] inline editor load:', a.id, 'quoteChars=', quoteBlock.length, 'commentChars=', commentBody.length);
                     // stash these on the textarea dataset for save
                     textarea.dataset.fm = frontmatter;
                     textarea.dataset.quote = quoteBlock;
@@ -640,7 +636,6 @@ export class ExampleView extends ItemView {
 
                 saveBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    console.log('[mg] save button clicked');
                     void doSave();
                 });
             }
@@ -866,12 +861,9 @@ export class ExampleView extends ItemView {
                 }
             }
             if (migrated) await this.saveAnnotationsForCurrentPdf();
-
-            this.dirtyAnnotationIds.clear();
         } catch (e) {
             console.warn('[annotations] Failed to load annotations:', e);
             this.annotations = [];
-            this.dirtyAnnotationIds.clear();
         }
     }
 
@@ -960,7 +952,6 @@ export class ExampleView extends ItemView {
         };
 
         this.annotations.push(ann);
-        this.dirtyAnnotationIds.add(ann.id);
 
         // Select + optionally focus editor immediately (caret visible right away)
         this.selectedAnnotationId = ann.id;
@@ -970,7 +961,6 @@ export class ExampleView extends ItemView {
         this.renderCommentMarkers();
         this.renderHighlights();
         await this.saveAnnotationsForCurrentPdf();
-        this.dirtyAnnotationIds.delete(ann.id);
 
         // Kick off note creation in the background so the UI is responsive immediately
         if (this.currentPdfPath) {
