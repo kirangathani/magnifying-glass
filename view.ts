@@ -562,6 +562,36 @@ export class ExampleView extends ItemView {
 
     private async renderNotePreviewInto(ann: PdfAnnotation, container: HTMLElement): Promise<void> {
         container.empty();
+
+        // Make rendered wikilinks clickable (open in workspace) via event delegation.
+        // We only attach this once per container instance.
+        if (container.dataset.mgLinks !== '1') {
+            container.dataset.mgLinks = '1';
+            container.addEventListener('click', (evt) => {
+                const target = evt.target as HTMLElement | null;
+                if (!target) return;
+
+                const linkEl = target.closest?.('.internal-link') as HTMLElement | null;
+                if (!linkEl) return;
+
+                const href =
+                    linkEl.getAttribute('data-href') ??
+                    linkEl.getAttribute('href') ??
+                    linkEl.textContent ??
+                    '';
+                if (!href) return;
+
+                evt.preventDefault();
+                evt.stopPropagation();
+                try {
+                    // Use Obsidian link opener so it behaves like a normal wikilink click
+                    this.app.workspace.openLinkText(href, this.selectedNoteFile?.path ?? '', true);
+                } catch (e) {
+                    console.warn('[comment-preview] failed to open link:', href, e);
+                }
+            });
+        }
+
         if (ann.notePath) {
             const af = this.app.vault.getAbstractFileByPath(ann.notePath);
             if (af instanceof TFile) {
