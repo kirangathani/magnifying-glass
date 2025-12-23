@@ -109,6 +109,7 @@
     overflow: auto;
     background: var(--background-primary);
     border-left: 1px solid var(--background-modifier-border);
+    position: relative;
 }
 
 /* PDF viewer component */

@@ -99,6 +99,24 @@ export class ExampleView extends ItemView {
                 }
             },
             {
+                id: 'comment',
+                label: 'Comment',
+                icon: '💬',
+                callback: (text: string) => {
+                    const anchor = this.getSelectionAnchorFromCurrentSelection();
+                    if (!anchor) {
+                        console.log('[comment] No selection anchor available');
+                        return;
+                    }
+                    console.log('[comment]', {
+                        selectedText: text,
+                        pageNumber: anchor.pageNumber,
+                        yNorm: anchor.yNorm,
+                        yPercent: Math.round(anchor.yNorm * 10000) / 100, // 2dp
+                    });
+                }
+            },
+            {
                 id: 'copy-to-note',
                 label: 'Copy to Active Note',
                 icon: '📝',
@@ -329,5 +347,42 @@ export class ExampleView extends ItemView {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
         }
+    }
+
+    private getSelectionAnchorFromCurrentSelection(): { pageNumber: number; yNorm: number } | null {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        if (!rect || rect.height === 0) return null;
+
+        // Find the page element containing the selection
+        const anchorEl =
+            selection.anchorNode instanceof Element
+                ? selection.anchorNode
+                : selection.anchorNode?.parentElement ?? null;
+        const commonEl =
+            range.commonAncestorContainer instanceof Element
+                ? range.commonAncestorContainer
+                : range.commonAncestorContainer?.parentElement ?? null;
+
+        const pageEl =
+            (anchorEl?.closest?.('.pdf-page-container') ?? commonEl?.closest?.('.pdf-page-container')) as
+                | HTMLElement
+                | null;
+        if (!pageEl) return null;
+
+        const pageRect = pageEl.getBoundingClientRect();
+        if (!pageRect || pageRect.height === 0) return null;
+
+        const centerY = rect.top + rect.height / 2;
+        let yNorm = (centerY - pageRect.top) / pageRect.height;
+        yNorm = Math.max(0, Math.min(1, yNorm));
+
+        const pageNumber = Number(pageEl.dataset.pageNumber ?? pageEl.getAttribute('data-page-number') ?? NaN);
+        if (!Number.isFinite(pageNumber)) return null;
+
+        return { pageNumber, yNorm };
     }
 }
