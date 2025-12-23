@@ -100,9 +100,11 @@ export class ExampleView extends ItemView {
     private selectedAnnotationId: string | null = null;
     private activeInlineTextarea: HTMLTextAreaElement | null = null;
     private activeInlineSave: (() => Promise<void>) | null = null;
+    private activeInlineDirty: boolean = false;
     private inlineKeyHandler: ((e: KeyboardEvent) => void) | null = null;
     private pendingFocusAnnotationId: string | null = null;
     private pendingNoteCreation: Map<string, Promise<TFile>> = new Map();
+    private deselectHandler: ((e: MouseEvent) => void) | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -243,6 +245,30 @@ export class ExampleView extends ItemView {
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+
+            // Deselect comment when clicking outside comment boxes (in PDF area or blank space in comments pane)
+            if (!this.deselectHandler) {
+                this.deselectHandler = (e: MouseEvent) => {
+                    if (!this.selectedAnnotationId) return;
+                    const target = e.target as HTMLElement | null;
+                    if (!target) return;
+
+                    // If click is inside any comment marker, let the marker click handler manage selection.
+                    if (target.closest?.('.pdf-comment-marker')) return;
+
+                    // If there are unsaved changes in the active inline editor, save first (same as pressing Save)
+                    if (this.activeInlineDirty && this.activeInlineSave) {
+                        void this.activeInlineSave();
+                        return;
+                    }
+
+                    this.selectedAnnotationId = null;
+                    this.renderCommentMarkers();
+                };
+            }
+            // Capture phase so it triggers even if inner elements stop propagation.
+            this.pdfContainer.addEventListener('mousedown', this.deselectHandler, true);
+            this.commentsPane.addEventListener('mousedown', this.deselectHandler, true);
 
             // Capture Ctrl/Cmd+Enter at window level (before Obsidian hotkeys),
             // but only when our inline comment textarea is focused.
@@ -448,8 +474,14 @@ export class ExampleView extends ItemView {
             window.removeEventListener('keydown', this.inlineKeyHandler, true);
             this.inlineKeyHandler = null;
         }
+        if (this.deselectHandler) {
+            try { this.pdfContainer?.removeEventListener('mousedown', this.deselectHandler, true); } catch { /* ignore */ }
+            try { this.commentsPane?.removeEventListener('mousedown', this.deselectHandler, true); } catch { /* ignore */ }
+            this.deselectHandler = null;
+        }
         this.activeInlineTextarea = null;
         this.activeInlineSave = null;
+        this.activeInlineDirty = false;
         this.pendingFocusAnnotationId = null;
         this.pendingNoteCreation.clear();
     }
@@ -521,6 +553,7 @@ export class ExampleView extends ItemView {
                 textarea.addEventListener('click', (e) => e.stopPropagation());
                 textarea.addEventListener('input', () => {
                     saveBtn.disabled = false;
+                    this.activeInlineDirty = true;
                 });
 
                 const doSave = async () => {
@@ -574,6 +607,7 @@ export class ExampleView extends ItemView {
                         const next = `${fm}${quote}${textarea.value}\n`;
                         await this.app.vault.modify(af, next);
                         // Deselect after save and refresh UI
+                        this.activeInlineDirty = false;
                         this.selectedAnnotationId = null;
                         this.renderCommentMarkers();
                     } catch (err) {
@@ -588,6 +622,7 @@ export class ExampleView extends ItemView {
                 // Register as the currently active inline editor for global shortcut handling
                 this.activeInlineTextarea = textarea;
                 this.activeInlineSave = doSave;
+                this.activeInlineDirty = false;
 
                 // Auto-focus the editor immediately when requested (e.g. newly created comment)
                 if (this.pendingFocusAnnotationId === a.id) {
