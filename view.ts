@@ -68,6 +68,8 @@ export class ExampleView extends ItemView {
     private pdfContainer: HTMLElement;
     private pdfViewer: any = null;
     private controlsSection: HTMLElement;
+    private viewerRow: HTMLElement;
+    private commentsPane: HTMLElement;
     private pluginId: string;
     private pluginDir: string;
 
@@ -180,9 +182,26 @@ export class ExampleView extends ItemView {
             const zoomLabel = zoomContainer.createEl('span', { text: '150%', cls: 'zoom-label' });
             const zoomInBtn = zoomContainer.createEl('button', { text: '+', cls: 'zoom-btn' });
 
-            // Create PDF container
-            this.pdfContainer = container.createEl('div', { cls: 'pdf-viewer-container' });
+            // Disable zoom controls while loading/zooming
+            let isLoadingPdf = false;
+            let isZooming = false;
+            const updateZoomButtonsState = () => {
+                const enabled = Boolean(this.pdfViewer) && !isLoadingPdf && !isZooming;
+                zoomOutBtn.disabled = !enabled;
+                zoomInBtn.disabled = !enabled;
+            };
+            // Initial state (no PDF loaded yet)
+            updateZoomButtonsState();
+
+            // Viewer row (PDF left + comments right), below the input/controls section
+            this.viewerRow = container.createEl('div', { cls: 'pdf-viewer-row' });
+
+            // Create PDF container (left)
+            this.pdfContainer = this.viewerRow.createEl('div', { cls: 'pdf-viewer-container' });
             this.pdfContainer.style.minHeight = '0';
+
+            // Create empty comments pane (right)
+            this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
 
             // Load button handler
             loadButton.addEventListener('click', async () => {
@@ -193,6 +212,9 @@ export class ExampleView extends ItemView {
                 }
 
                 try {
+                    isLoadingPdf = true;
+                    updateZoomButtonsState();
+
                     console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
                     
@@ -231,6 +253,7 @@ export class ExampleView extends ItemView {
                         
                         // Load the PDF
                         await this.pdfViewer.loadPdf(pdfData);
+                        // Pages are fully rendered when loadPdf resolves
                         
                         // Show success
                         this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
@@ -243,23 +266,45 @@ export class ExampleView extends ItemView {
                 } catch (error: any) {
                     console.error('Error loading PDF:', error);
                     this.showMessage(`Error: ${error.message}`, 'error');
+                    // Ensure we don't leave a half-initialized viewer around
+                    if (this.pdfViewer) {
+                        try { this.pdfViewer.destroy(); } catch { /* ignore */ }
+                        this.pdfViewer = null;
+                    }
+                } finally {
+                    isLoadingPdf = false;
+                    updateZoomButtonsState();
                 }
             });
 
             // Zoom handlers
             zoomOutBtn.addEventListener('click', async () => {
                 if (this.pdfViewer) {
-                    const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
-                    await this.pdfViewer.setScale(newScale);
-                    zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                    try {
+                        isZooming = true;
+                        updateZoomButtonsState();
+                        const newScale = Math.max(0.5, this.pdfViewer.getScale() - 0.25);
+                        await this.pdfViewer.setScale(newScale);
+                        zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                    } finally {
+                        isZooming = false;
+                        updateZoomButtonsState();
+                    }
                 }
             });
 
             zoomInBtn.addEventListener('click', async () => {
                 if (this.pdfViewer) {
-                    const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
-                    await this.pdfViewer.setScale(newScale);
-                    zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                    try {
+                        isZooming = true;
+                        updateZoomButtonsState();
+                        const newScale = Math.min(3, this.pdfViewer.getScale() + 0.25);
+                        await this.pdfViewer.setScale(newScale);
+                        zoomLabel.textContent = `${Math.round(newScale * 100)}%`;
+                    } finally {
+                        isZooming = false;
+                        updateZoomButtonsState();
+                    }
                 }
             });
             
