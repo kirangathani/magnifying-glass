@@ -98,6 +98,11 @@ export class ExampleView extends ItemView {
     private pluginDir: string;
 
     private selectedAnnotationId: string | null = null;
+    private activeInlineTextarea: HTMLTextAreaElement | null = null;
+    private activeInlineSave: (() => Promise<void>) | null = null;
+    private inlineKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+    private pendingFocusAnnotationId: string | null = null;
+    private pendingNoteCreation: Map<string, Promise<TFile>> = new Map();
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -130,7 +135,7 @@ export class ExampleView extends ItemView {
                 icon: '💬',
                 callback: (text: string) => {
                     // Fire-and-forget; the context menu callback is sync
-                    void this.handleCommentAction(text);
+                    void this.handleCommentAction(text, { focusEditor: true });
                 }
             },
             {
@@ -238,6 +243,44 @@ export class ExampleView extends ItemView {
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+
+            // Capture Ctrl/Cmd+Enter at window level (before Obsidian hotkeys),
+            // but only when our inline comment textarea is focused.
+            if (!this.inlineKeyHandler) {
+                this.inlineKeyHandler = (e: KeyboardEvent) => {
+                    // Comment shortcut: Ctrl+Alt+M (only when this view is active)
+                    const isCommentHotkey =
+                        e.ctrlKey &&
+                        e.altKey &&
+                        !e.shiftKey &&
+                        (e.key === 'm' || e.key === 'M' || e.code === 'KeyM');
+                    if (isCommentHotkey) {
+                        // Only handle if this view is the active view
+                        if (this.app.workspace.activeLeaf?.view !== this) return;
+                        const text = window.getSelection()?.toString().trim() ?? '';
+                        if (!text) return;
+                        e.preventDefault();
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        (e as any).stopImmediatePropagation?.();
+                        e.stopPropagation();
+                        void this.handleCommentAction(text, { focusEditor: true });
+                        return;
+                    }
+
+                    if (!this.activeInlineTextarea || document.activeElement !== this.activeInlineTextarea) return;
+                    const isCombo =
+                        (e.ctrlKey || e.metaKey) &&
+                        (e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter');
+                    if (!isCombo) return;
+                    e.preventDefault();
+                    // stop immediately so Obsidian/global handlers don't swallow it
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    (e as any).stopImmediatePropagation?.();
+                    e.stopPropagation();
+                    void this.activeInlineSave?.();
+                };
+                window.addEventListener('keydown', this.inlineKeyHandler, true);
+            }
 
             // Scroll sync so comment markers align with PDF content while scrolling
             const syncScroll = (from: 'pdf' | 'comments') => {
@@ -401,6 +444,14 @@ export class ExampleView extends ItemView {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
         }
+        if (this.inlineKeyHandler) {
+            window.removeEventListener('keydown', this.inlineKeyHandler, true);
+            this.inlineKeyHandler = null;
+        }
+        this.activeInlineTextarea = null;
+        this.activeInlineSave = null;
+        this.pendingFocusAnnotationId = null;
+        this.pendingNoteCreation.clear();
     }
 
     private updateCommentsTrackHeight(): void {
@@ -432,12 +483,6 @@ export class ExampleView extends ItemView {
                 this.renderCommentMarkers();
             });
 
-            const header = marker.createEl('div', { cls: 'pdf-comment-marker-header' });
-            header.createEl('div', {
-                cls: 'pdf-comment-marker-snippet',
-                text: a.selectedText.length > 120 ? `${a.selectedText.slice(0, 120)}…` : a.selectedText,
-            });
-
             const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
             void this.renderNotePreviewInto(a, preview);
 
@@ -452,6 +497,11 @@ export class ExampleView extends ItemView {
                 const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
                 const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
                 saveBtn.disabled = true;
+                let isSaving = false;
+
+                // Provide default frontmatter/quote so saving works even before notePath is ready.
+                textarea.dataset.fm = '';
+                textarea.dataset.quote = `> ${a.selectedText.replace(/\n/g, '\n> ')}\n\n`;
 
                 // Load the current comment body from the note (excluding frontmatter + quote block)
                 void (async () => {
@@ -461,6 +511,7 @@ export class ExampleView extends ItemView {
                     const md = await this.app.vault.read(af);
                     const { frontmatter, body } = this.stripFrontmatter(md);
                     const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+                    console.log('[mg] inline editor load:', a.id, 'quoteChars=', quoteBlock.length, 'commentChars=', commentBody.length);
                     // stash these on the textarea dataset for save
                     textarea.dataset.fm = frontmatter;
                     textarea.dataset.quote = quoteBlock;
@@ -472,24 +523,90 @@ export class ExampleView extends ItemView {
                     saveBtn.disabled = false;
                 });
 
-                saveBtn.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    if (!a.notePath) return;
+                const doSave = async () => {
+                    if (isSaving) return;
+                    // Ensure note exists
+                    if (!a.notePath) {
+                        const existing = this.pendingNoteCreation.get(a.id);
+                        if (existing) {
+                            try {
+                                const note = await existing;
+                                a.notePath = note.path;
+                                await this.saveAnnotationsForCurrentPdf();
+                            } catch (e) {
+                                console.warn('[comment-inline] note creation failed:', e);
+                                return;
+                            }
+                        } else if (this.currentPdfPath) {
+                            // Last resort: create note now
+                            const p = (async () => {
+                                if (!this.currentPdfCommentsFolder) {
+                                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath!);
+                                }
+                                const note = await this.createCommentNote(a);
+                                a.notePath = note.path;
+                                await this.saveAnnotationsForCurrentPdf();
+                                return note;
+                            })();
+                            this.pendingNoteCreation.set(a.id, p);
+                            try {
+                                const note = await p;
+                                a.notePath = note.path;
+                            } catch (e) {
+                                console.warn('[comment-inline] note creation failed:', e);
+                                return;
+                            } finally {
+                                this.pendingNoteCreation.delete(a.id);
+                            }
+                        } else {
+                            return;
+                        }
+                    }
+
                     const af = this.app.vault.getAbstractFileByPath(a.notePath);
                     if (!(af instanceof TFile)) return;
 
+                    isSaving = true;
                     saveBtn.disabled = true;
                     try {
                         const fm = textarea.dataset.fm ?? '';
                         const quote = textarea.dataset.quote ?? '';
                         const next = `${fm}${quote}${textarea.value}\n`;
                         await this.app.vault.modify(af, next);
-                        // Refresh preview to show new text (and keep links clickable)
+                        // Deselect after save and refresh UI
+                        this.selectedAnnotationId = null;
                         this.renderCommentMarkers();
                     } catch (err) {
                         console.warn('[comment-inline] failed to save:', err);
+                        // allow retry
                         saveBtn.disabled = false;
+                    } finally {
+                        isSaving = false;
                     }
+                };
+
+                // Register as the currently active inline editor for global shortcut handling
+                this.activeInlineTextarea = textarea;
+                this.activeInlineSave = doSave;
+
+                // Auto-focus the editor immediately when requested (e.g. newly created comment)
+                if (this.pendingFocusAnnotationId === a.id) {
+                    this.pendingFocusAnnotationId = null;
+                    requestAnimationFrame(() => {
+                        try {
+                            textarea.focus();
+                            const len = textarea.value.length;
+                            textarea.setSelectionRange(len, len);
+                        } catch {
+                            // ignore
+                        }
+                    });
+                }
+
+                saveBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    console.log('[mg] save button clicked');
+                    void doSave();
                 });
             }
         }
@@ -562,13 +679,21 @@ export class ExampleView extends ItemView {
     private splitLeadingQuote(body: string): { quoteBlock: string; commentBody: string } {
         const lines = (body ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
         let i = 0;
+
+        // Skip any leading blank lines before the quote block (defensive)
+        while (i < lines.length && lines[i].trim() === '') i += 1;
+
         const quoteLines: string[] = [];
         while (i < lines.length) {
-            const line = lines[i].replace(/^\uFEFF/, ''); // just in case
-            if (!line.startsWith('>')) break;
-            quoteLines.push(line);
+            const raw = lines[i].replace(/^\uFEFF/, ''); // just in case
+            // Treat lines like "> ..." and "   > ..." as quote lines
+            if (!/^\s*>/.test(raw)) break;
+            // Normalize to start with ">" to keep the stored quoteBlock consistent
+            const normalized = raw.replace(/^\s*>/, '>');
+            quoteLines.push(normalized);
             i += 1;
         }
+
         // Skip blank lines after quote block
         while (i < lines.length && lines[i].trim() === '') i += 1;
 
@@ -780,7 +905,7 @@ export class ExampleView extends ItemView {
             .map(([pageNumber, rects]) => ({ pageNumber, rects }));
     }
 
-    private async handleCommentAction(selectedText: string): Promise<void> {
+    private async handleCommentAction(selectedText: string, opts?: { focusEditor?: boolean }): Promise<void> {
         const text = String(selectedText ?? '').trim();
         if (!text) return;
 
@@ -799,25 +924,33 @@ export class ExampleView extends ItemView {
             highlights,
         };
 
-        if (this.currentPdfPath) {
-            if (!this.currentPdfCommentsFolder) {
-                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
-            }
-            const note = await this.createCommentNote(ann);
-            ann.notePath = note.path;
-        }
-
         this.annotations.push(ann);
         this.dirtyAnnotationIds.add(ann.id);
+
+        // Select + optionally focus editor immediately (caret visible right away)
+        this.selectedAnnotationId = ann.id;
+        if (opts?.focusEditor) this.pendingFocusAnnotationId = ann.id;
+
         this.updateCommentsTrackHeight();
         this.renderCommentMarkers();
         this.renderHighlights();
         await this.saveAnnotationsForCurrentPdf();
         this.dirtyAnnotationIds.delete(ann.id);
 
-        // Auto-select for editing
-        this.selectedAnnotationId = ann.id;
-        this.renderCommentMarkers();
+        // Kick off note creation in the background so the UI is responsive immediately
+        if (this.currentPdfPath) {
+            const createPromise = (async () => {
+                if (!this.currentPdfCommentsFolder) {
+                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath!);
+                }
+                const note = await this.createCommentNote(ann);
+                ann.notePath = note.path;
+                await this.saveAnnotationsForCurrentPdf();
+                return note;
+            })();
+            this.pendingNoteCreation.set(ann.id, createPromise);
+            void createPromise.finally(() => this.pendingNoteCreation.delete(ann.id));
+        }
 
         console.log('[comment]', {
             selectedText: text,
