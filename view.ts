@@ -2,6 +2,21 @@ import { ItemView, WorkspaceLeaf, TFile } from 'obsidian';
 
 export const VIEW_TYPE_EXAMPLE = 'example-view';
 
+type NormalizedRect = { x: number; y: number; w: number; h: number }; // 0..1 relative to page box
+type PageRects = { pageNumber: number; rects: NormalizedRect[] };
+type PdfAnnotation = {
+    id: string;
+    createdAt: number;
+    selectedText: string;
+    anchor: { pageNumber: number; yNorm: number };
+    highlights: PageRects[];
+};
+type PdfAnnotationsFile = {
+    version: 1;
+    pdfPath: string;
+    annotations: PdfAnnotation[];
+};
+
 function normalizePluginDir(input: string): string {
     // Handle values like:
     // - "magnifying-glass"
@@ -71,7 +86,8 @@ export class ExampleView extends ItemView {
     private viewerRow: HTMLElement;
     private commentsPane: HTMLElement;
     private commentsTrack: HTMLElement;
-    private commentAnchors: Array<{ id: string; pageNumber: number; yNorm: number; createdAt: number }> = [];
+    private annotations: PdfAnnotation[] = [];
+    private currentPdfPath: string | null = null;
     private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
@@ -106,28 +122,8 @@ export class ExampleView extends ItemView {
                 label: 'Comment',
                 icon: '💬',
                 callback: (text: string) => {
-                    const anchor = this.getSelectionAnchorFromCurrentSelection();
-                    if (!anchor) {
-                        console.log('[comment] No selection anchor available');
-                        return;
-                    }
-
-                    // Store anchor for marker rendering (no real comments yet)
-                    this.commentAnchors.push({
-                        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                        pageNumber: anchor.pageNumber,
-                        yNorm: anchor.yNorm,
-                        createdAt: Date.now(),
-                    });
-                    this.updateCommentsTrackHeight();
-                    this.renderCommentMarkers();
-
-                    console.log('[comment]', {
-                        selectedText: text,
-                        pageNumber: anchor.pageNumber,
-                        yNorm: anchor.yNorm,
-                        yPercent: Math.round(anchor.yNorm * 10000) / 100, // 2dp
-                    });
+                    // Fire-and-forget; the context menu callback is sync
+                    void this.handleCommentAction(text);
                 }
             },
             {
@@ -264,9 +260,10 @@ export class ExampleView extends ItemView {
                 try {
                     isLoadingPdf = true;
                     updateZoomButtonsState();
-                    // Reset markers for now when loading a new PDF
-                    this.commentAnchors = [];
+                    this.currentPdfPath = pdfPath;
+                    this.annotations = [];
                     this.renderCommentMarkers();
+                    this.renderHighlights();
 
                     console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
@@ -307,8 +304,10 @@ export class ExampleView extends ItemView {
                         // Load the PDF
                         await this.pdfViewer.loadPdf(pdfData);
                         // Pages are fully rendered when loadPdf resolves
+                        await this.loadAnnotationsForCurrentPdf();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
+                        this.renderHighlights();
                         
                         // Show success
                         this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
@@ -331,6 +330,7 @@ export class ExampleView extends ItemView {
                     updateZoomButtonsState();
                     this.updateCommentsTrackHeight();
                     this.renderCommentMarkers();
+                    this.renderHighlights();
                 }
             });
 
@@ -348,6 +348,7 @@ export class ExampleView extends ItemView {
                         updateZoomButtonsState();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
+                        this.renderHighlights();
                     }
                 }
             });
@@ -365,6 +366,7 @@ export class ExampleView extends ItemView {
                         updateZoomButtonsState();
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
+                        this.renderHighlights();
                     }
                 }
             });
@@ -402,17 +404,183 @@ export class ExampleView extends ItemView {
         if (!this.commentsTrack || !this.pdfContainer) return;
         this.commentsTrack.empty();
 
-        for (const a of this.commentAnchors) {
+        for (const a of this.annotations) {
             const pageEl = this.pdfContainer.querySelector(
-                `.pdf-page-container[data-page-number="${a.pageNumber}"]`
+                `.pdf-page-container[data-page-number="${a.anchor.pageNumber}"]`
             ) as HTMLElement | null;
             if (!pageEl) continue;
 
-            const topPx = pageEl.offsetTop + (a.yNorm * pageEl.offsetHeight);
+            const topPx = pageEl.offsetTop + (a.anchor.yNorm * pageEl.offsetHeight);
             const marker = this.commentsTrack.createEl('div', { cls: 'pdf-comment-marker' });
             // Align the TOP of the marker to the computed pixel Y
             marker.style.top = `${topPx}px`;
         }
+    }
+
+    private renderHighlights(): void {
+        if (!this.pdfContainer) return;
+
+        const pages = Array.from(this.pdfContainer.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        for (const pageEl of pages) {
+            let layer = pageEl.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+            if (!layer) {
+                layer = pageEl.createEl('div', { cls: 'pdf-highlight-layer' });
+            }
+            layer.empty();
+        }
+
+        // Draw rects per page from all annotations
+        for (const ann of this.annotations) {
+            for (const pr of ann.highlights) {
+                const pageEl = this.pdfContainer.querySelector(
+                    `.pdf-page-container[data-page-number="${pr.pageNumber}"]`
+                ) as HTMLElement | null;
+                if (!pageEl) continue;
+
+                const layer = pageEl.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+                if (!layer) continue;
+
+                const pageW = pageEl.clientWidth || pageEl.offsetWidth;
+                const pageH = pageEl.clientHeight || pageEl.offsetHeight;
+                if (!pageW || !pageH) continue;
+
+                for (const r of pr.rects) {
+                    const el = layer.createEl('div', { cls: 'pdf-highlight-rect' });
+                    el.style.left = `${r.x * pageW}px`;
+                    el.style.top = `${r.y * pageH}px`;
+                    el.style.width = `${r.w * pageW}px`;
+                    el.style.height = `${r.h * pageH}px`;
+                }
+            }
+        }
+    }
+
+    private getAnnotationsPathForPdf(pdfPath: string): string {
+        return `${pdfPath}.mg-comments.json`;
+    }
+
+    private async loadAnnotationsForCurrentPdf(): Promise<void> {
+        if (!this.currentPdfPath) return;
+
+        const sidecar = this.getAnnotationsPathForPdf(this.currentPdfPath);
+        try {
+            const af = this.app.vault.getAbstractFileByPath(sidecar);
+            if (!(af instanceof TFile)) {
+                this.annotations = [];
+                return;
+            }
+
+            const raw = await this.app.vault.read(af);
+            const parsed = JSON.parse(raw) as PdfAnnotationsFile;
+            if (parsed?.version !== 1 || parsed?.pdfPath !== this.currentPdfPath || !Array.isArray(parsed.annotations)) {
+                this.annotations = [];
+                return;
+            }
+
+            this.annotations = parsed.annotations;
+        } catch (e) {
+            console.warn('[annotations] Failed to load annotations:', e);
+            this.annotations = [];
+        }
+    }
+
+    private async saveAnnotationsForCurrentPdf(): Promise<void> {
+        if (!this.currentPdfPath) return;
+        const sidecar = this.getAnnotationsPathForPdf(this.currentPdfPath);
+
+        const payload: PdfAnnotationsFile = {
+            version: 1,
+            pdfPath: this.currentPdfPath,
+            annotations: this.annotations,
+        };
+        const json = JSON.stringify(payload, null, 2);
+
+        const existing = this.app.vault.getAbstractFileByPath(sidecar);
+        if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, json);
+        } else {
+            await this.app.vault.create(sidecar, json);
+        }
+    }
+
+    private getSelectionHighlightRectsFromCurrentSelection(): PageRects[] {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.rangeCount === 0) return [];
+
+        const range = selection.getRangeAt(0);
+        const rects = Array.from(range.getClientRects()).filter(r => r && r.width > 0.5 && r.height > 0.5);
+        if (!rects.length) return [];
+
+        const out = new Map<number, NormalizedRect[]>();
+
+        for (const rect of rects) {
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const elAtPoint = document.elementFromPoint(cx, cy);
+            const pageEl = elAtPoint?.closest?.('.pdf-page-container') as HTMLElement | null;
+            if (!pageEl) continue;
+
+            const pageNumber = Number(pageEl.dataset.pageNumber ?? pageEl.getAttribute('data-page-number') ?? NaN);
+            if (!Number.isFinite(pageNumber)) continue;
+
+            const pageRect = pageEl.getBoundingClientRect();
+            if (!pageRect.width || !pageRect.height) continue;
+
+            // Normalize to page box, clamp to [0..1]
+            const x = (rect.left - pageRect.left) / pageRect.width;
+            const y = (rect.top - pageRect.top) / pageRect.height;
+            const w = rect.width / pageRect.width;
+            const h = rect.height / pageRect.height;
+
+            const nr: NormalizedRect = {
+                x: Math.max(0, Math.min(1, x)),
+                y: Math.max(0, Math.min(1, y)),
+                w: Math.max(0, Math.min(1, w)),
+                h: Math.max(0, Math.min(1, h)),
+            };
+
+            const arr = out.get(pageNumber) ?? [];
+            arr.push(nr);
+            out.set(pageNumber, arr);
+        }
+
+        return Array.from(out.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([pageNumber, rects]) => ({ pageNumber, rects }));
+    }
+
+    private async handleCommentAction(selectedText: string): Promise<void> {
+        const text = String(selectedText ?? '').trim();
+        if (!text) return;
+
+        const anchor = this.getSelectionAnchorFromCurrentSelection();
+        if (!anchor) {
+            console.log('[comment] No selection anchor available');
+            return;
+        }
+
+        const highlights = this.getSelectionHighlightRectsFromCurrentSelection();
+        const ann: PdfAnnotation = {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            createdAt: Date.now(),
+            selectedText: text,
+            anchor,
+            highlights,
+        };
+
+        this.annotations.push(ann);
+        this.updateCommentsTrackHeight();
+        this.renderCommentMarkers();
+        this.renderHighlights();
+        await this.saveAnnotationsForCurrentPdf();
+
+        console.log('[comment]', {
+            selectedText: text,
+            pageNumber: anchor.pageNumber,
+            yNorm: anchor.yNorm,
+            yPercent: Math.round(anchor.yNorm * 10000) / 100, // 2dp
+            highlightPages: highlights.map(h => h.pageNumber),
+        });
     }
 
     private getSelectionAnchorFromCurrentSelection(): { pageNumber: number; yNorm: number } | null {

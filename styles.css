@@ -149,6 +149,20 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
+/* Highlight overlay layer (per page) */
+.pdf-highlight-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 3;
+}
+
+.pdf-highlight-rect {
+    position: absolute;
+    background: rgba(124, 58, 237, 0.25);
+    border-radius: 3px;
+}
+
 /* Canvas for PDF rendering */
 .pdf-page-canvas {
     display: block;
