@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, TFile } from 'obsidian';
+import { ItemView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath } from 'obsidian';
 
 export const VIEW_TYPE_EXAMPLE = 'example-view';
 
@@ -8,7 +8,9 @@ type PdfAnnotation = {
     id: string;
     createdAt: number;
     selectedText: string;
+    // Back-compat: older sidecars may have inline commentText. New flow uses notePath.
     commentText?: string;
+    notePath?: string; // vault path to markdown note backing this comment
     anchor: { pageNumber: number; yNorm: number };
     highlights: PageRects[];
 };
@@ -89,10 +91,18 @@ export class ExampleView extends ItemView {
     private commentsTrack: HTMLElement;
     private annotations: PdfAnnotation[] = [];
     private currentPdfPath: string | null = null;
+    private currentPdfCommentsFolder: string | null = null;
     private dirtyAnnotationIds: Set<string> = new Set();
     private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
+
+    private selectedAnnotationId: string | null = null;
+    private editorEl: HTMLElement | null = null;
+    private editorTextarea: HTMLTextAreaElement | null = null;
+    private editorSaveBtn: HTMLButtonElement | null = null;
+    private selectedNoteFrontmatter: string = '';
+    private selectedNoteFile: TFile | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -233,6 +243,8 @@ export class ExampleView extends ItemView {
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+            this.editorEl = this.commentsPane.createEl('div', { cls: 'pdf-comments-editor' });
+            this.renderEditor(null);
 
             // Scroll sync so comment markers align with PDF content while scrolling
             const syncScroll = (from: 'pdf' | 'comments') => {
@@ -263,9 +275,12 @@ export class ExampleView extends ItemView {
                     isLoadingPdf = true;
                     updateZoomButtonsState();
                     this.currentPdfPath = pdfPath;
+                    this.currentPdfCommentsFolder = null;
                     this.annotations = [];
+                    this.selectedAnnotationId = null;
                     this.renderCommentMarkers();
                     this.renderHighlights();
+                    this.renderEditor(null);
 
                     console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
@@ -310,6 +325,7 @@ export class ExampleView extends ItemView {
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
                         this.renderHighlights();
+                        this.renderEditor(this.selectedAnnotationId);
                         
                         // Show success
                         this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
@@ -417,43 +433,22 @@ export class ExampleView extends ItemView {
             // Align the TOP of the marker to the computed pixel Y
             marker.style.top = `${topPx}px`;
 
-            // Simple comment editor UI (small textarea + footer Save button)
-            const body = marker.createEl('div', { cls: 'pdf-comment-marker-body' });
-            body.createEl('div', {
+            marker.dataset.annotationId = a.id;
+            marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
+            marker.addEventListener('click', () => {
+                this.selectedAnnotationId = a.id;
+                this.renderCommentMarkers();
+                this.renderEditor(a.id);
+            });
+
+            const header = marker.createEl('div', { cls: 'pdf-comment-marker-header' });
+            header.createEl('div', {
                 cls: 'pdf-comment-marker-snippet',
                 text: a.selectedText.length > 120 ? `${a.selectedText.slice(0, 120)}…` : a.selectedText,
             });
 
-            const textarea = body.createEl('textarea', {
-                cls: 'pdf-comment-textarea',
-                attr: {
-                    rows: '3',
-                    maxlength: '280',
-                    placeholder: 'Add a comment…',
-                },
-            });
-            textarea.value = a.commentText ?? '';
-            const footer = marker.createEl('div', { cls: 'pdf-comment-marker-footer' });
-            const saveBtn = footer.createEl('button', { cls: 'pdf-comment-save-btn', text: 'Save' });
-            saveBtn.disabled = !this.dirtyAnnotationIds.has(a.id);
-
-            textarea.addEventListener('input', () => {
-                a.commentText = textarea.value;
-                this.dirtyAnnotationIds.add(a.id);
-                saveBtn.disabled = false;
-            });
-
-            saveBtn.addEventListener('click', async () => {
-                saveBtn.disabled = true;
-                try {
-                    await this.saveAnnotationsForCurrentPdf();
-                    this.dirtyAnnotationIds.delete(a.id);
-                } catch (e) {
-                    console.warn('[comment] Failed to save:', e);
-                    // If save failed, allow retry
-                    saveBtn.disabled = false;
-                }
-            });
+            const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
+            void this.renderNotePreviewInto(a, preview);
         }
     }
 
@@ -499,6 +494,153 @@ export class ExampleView extends ItemView {
         return `${pdfPath}.mg-comments.json`;
     }
 
+    private getPdfBaseName(pdfPath: string): string {
+        const parts = String(pdfPath ?? '').split('/').filter(Boolean);
+        const name = parts.length ? parts[parts.length - 1] : 'PDF';
+        return name.toLowerCase().endsWith('.pdf') ? name.slice(0, -4) : name;
+    }
+
+    private sanitizeVaultName(name: string): string {
+        return (name || 'Untitled').replace(/[\\/:*?"<>|]/g, '_').trim();
+    }
+
+    private stripFrontmatter(md: string): { frontmatter: string; body: string } {
+        const s = md ?? '';
+        if (!s.startsWith('---')) return { frontmatter: '', body: s };
+        const idx = s.indexOf('\n---', 3);
+        if (idx === -1) return { frontmatter: '', body: s };
+        const end = idx + '\n---'.length;
+        const after = s.slice(end);
+        const body = after.startsWith('\n') ? after.slice(1) : after;
+        return { frontmatter: s.slice(0, end) + '\n', body };
+    }
+
+    private async ensurePerPdfFolder(pdfPath: string): Promise<string> {
+        const base = this.sanitizeVaultName(this.getPdfBaseName(pdfPath));
+        let candidate = normalizePath(base);
+        let i = 0;
+        while (true) {
+            const existing = this.app.vault.getAbstractFileByPath(candidate);
+            if (!existing) {
+                await this.app.vault.createFolder(candidate);
+                return candidate;
+            }
+            // If it exists and is a folder, reuse it
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if ((existing as any)?.children) return candidate;
+            i += 1;
+            candidate = normalizePath(`${base}_${i}`);
+        }
+    }
+
+    private async createCommentNote(ann: PdfAnnotation): Promise<TFile> {
+        if (!this.currentPdfPath) throw new Error('No current PDF path');
+        if (!this.currentPdfCommentsFolder) throw new Error('No comments folder');
+
+        const createdIso = new Date(ann.createdAt).toISOString().replace(/[:.]/g, '-');
+        const fileName = `comment-${createdIso}-${ann.id}.md`;
+        const notePath = normalizePath(`${this.currentPdfCommentsFolder}/${fileName}`);
+
+        const frontmatter =
+            `---\n` +
+            `pdfPath: "${this.currentPdfPath.replace(/"/g, '\\"')}"\n` +
+            `annotationId: "${ann.id}"\n` +
+            `pageNumber: ${ann.anchor.pageNumber}\n` +
+            `yNorm: ${ann.anchor.yNorm}\n` +
+            `createdAt: "${new Date(ann.createdAt).toISOString()}"\n` +
+            `---\n\n`;
+
+        const initialBody =
+            `> ${ann.selectedText.replace(/\n/g, '\n> ')}\n\n` +
+            `${(ann.commentText ?? '').trim()}\n`;
+
+        const content = frontmatter + initialBody;
+        const existing = this.app.vault.getAbstractFileByPath(notePath);
+        if (existing instanceof TFile) return existing;
+        return await this.app.vault.create(notePath, content);
+    }
+
+    private async renderNotePreviewInto(ann: PdfAnnotation, container: HTMLElement): Promise<void> {
+        container.empty();
+        if (ann.notePath) {
+            const af = this.app.vault.getAbstractFileByPath(ann.notePath);
+            if (af instanceof TFile) {
+                const md = await this.app.vault.read(af);
+                const { body } = this.stripFrontmatter(md);
+                await MarkdownRenderer.renderMarkdown(body, container, af.path, this);
+                return;
+            }
+        }
+        // Fallback (pre-migration): show inline text if present
+        const fallback = (ann.commentText ?? '').trim();
+        container.createEl('div', {
+            cls: 'pdf-comment-preview-empty',
+            text: fallback ? fallback : '(no note yet)',
+        });
+    }
+
+    private renderEditor(annotationId: string | null): void {
+        if (!this.editorEl) return;
+        this.editorEl.empty();
+        this.selectedNoteFile = null;
+        this.selectedNoteFrontmatter = '';
+        this.editorTextarea = null;
+        this.editorSaveBtn = null;
+
+        const header = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-header' });
+        header.createEl('div', { cls: 'pdf-comments-editor-title', text: 'Comment note' });
+
+        const body = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-body' });
+        if (!annotationId) {
+            body.createEl('div', { cls: 'pdf-comments-editor-empty', text: 'Select a comment to edit.' });
+            return;
+        }
+
+        const ann = this.annotations.find(a => a.id === annotationId) ?? null;
+        if (!ann?.notePath) {
+            body.createEl('div', { cls: 'pdf-comments-editor-empty', text: 'No note linked to this comment yet.' });
+            return;
+        }
+
+        const textarea = body.createEl('textarea', {
+            cls: 'pdf-comments-editor-textarea',
+            attr: { rows: '6', maxlength: '2000', placeholder: 'Write your comment… (supports [[wikilinks]])' },
+        });
+        this.editorTextarea = textarea;
+
+        const footer = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-footer' });
+        const saveBtn = footer.createEl('button', { cls: 'pdf-comments-editor-save', text: 'Save' });
+        saveBtn.disabled = true;
+        this.editorSaveBtn = saveBtn;
+
+        void (async () => {
+            const af = this.app.vault.getAbstractFileByPath(ann.notePath!);
+            if (!(af instanceof TFile)) return;
+            this.selectedNoteFile = af;
+            const md = await this.app.vault.read(af);
+            const { frontmatter, body } = this.stripFrontmatter(md);
+            this.selectedNoteFrontmatter = frontmatter;
+            textarea.value = body;
+        })();
+
+        textarea.addEventListener('input', () => {
+            saveBtn.disabled = false;
+        });
+
+        saveBtn.addEventListener('click', async () => {
+            if (!this.selectedNoteFile || !this.editorTextarea) return;
+            saveBtn.disabled = true;
+            try {
+                const next = `${this.selectedNoteFrontmatter}${this.editorTextarea.value}`;
+                await this.app.vault.modify(this.selectedNoteFile, next);
+                this.renderCommentMarkers();
+            } catch (e) {
+                console.warn('[comment-note] failed to save note:', e);
+                saveBtn.disabled = false;
+            }
+        });
+    }
+
     private async loadAnnotationsForCurrentPdf(): Promise<void> {
         if (!this.currentPdfPath) return;
 
@@ -507,6 +649,7 @@ export class ExampleView extends ItemView {
             const af = this.app.vault.getAbstractFileByPath(sidecar);
             if (!(af instanceof TFile)) {
                 this.annotations = [];
+                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
                 return;
             }
 
@@ -514,10 +657,24 @@ export class ExampleView extends ItemView {
             const parsed = JSON.parse(raw) as PdfAnnotationsFile;
             if (parsed?.version !== 1 || parsed?.pdfPath !== this.currentPdfPath || !Array.isArray(parsed.annotations)) {
                 this.annotations = [];
+                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
                 return;
             }
 
             this.annotations = parsed.annotations;
+
+            // Ensure per-PDF folder exists; migrate missing notePath by creating notes
+            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
+            let migrated = false;
+            for (const ann of this.annotations) {
+                if (!ann.notePath) {
+                    const note = await this.createCommentNote(ann);
+                    ann.notePath = note.path;
+                    migrated = true;
+                }
+            }
+            if (migrated) await this.saveAnnotationsForCurrentPdf();
+
             this.dirtyAnnotationIds.clear();
         } catch (e) {
             console.warn('[annotations] Failed to load annotations:', e);
@@ -606,10 +763,17 @@ export class ExampleView extends ItemView {
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
             createdAt: Date.now(),
             selectedText: text,
-            commentText: '',
             anchor,
             highlights,
         };
+
+        if (this.currentPdfPath) {
+            if (!this.currentPdfCommentsFolder) {
+                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(this.currentPdfPath);
+            }
+            const note = await this.createCommentNote(ann);
+            ann.notePath = note.path;
+        }
 
         this.annotations.push(ann);
         this.dirtyAnnotationIds.add(ann.id);
@@ -618,6 +782,11 @@ export class ExampleView extends ItemView {
         this.renderHighlights();
         await this.saveAnnotationsForCurrentPdf();
         this.dirtyAnnotationIds.delete(ann.id);
+
+        // Auto-select for editing
+        this.selectedAnnotationId = ann.id;
+        this.renderCommentMarkers();
+        this.renderEditor(ann.id);
 
         console.log('[comment]', {
             selectedText: text,
