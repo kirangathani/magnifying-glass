@@ -98,11 +98,6 @@ export class ExampleView extends ItemView {
     private pluginDir: string;
 
     private selectedAnnotationId: string | null = null;
-    private editorEl: HTMLElement | null = null;
-    private editorTextarea: HTMLTextAreaElement | null = null;
-    private editorSaveBtn: HTMLButtonElement | null = null;
-    private selectedNoteFrontmatter: string = '';
-    private selectedNoteFile: TFile | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -243,8 +238,6 @@ export class ExampleView extends ItemView {
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
-            this.editorEl = this.commentsPane.createEl('div', { cls: 'pdf-comments-editor' });
-            this.renderEditor(null);
 
             // Scroll sync so comment markers align with PDF content while scrolling
             const syncScroll = (from: 'pdf' | 'comments') => {
@@ -280,7 +273,6 @@ export class ExampleView extends ItemView {
                     this.selectedAnnotationId = null;
                     this.renderCommentMarkers();
                     this.renderHighlights();
-                    this.renderEditor(null);
 
                     console.log('Loading PDF:', pdfPath);
                     const file = this.app.vault.getAbstractFileByPath(pdfPath);
@@ -325,7 +317,6 @@ export class ExampleView extends ItemView {
                         this.updateCommentsTrackHeight();
                         this.renderCommentMarkers();
                         this.renderHighlights();
-                        this.renderEditor(this.selectedAnnotationId);
                         
                         // Show success
                         this.showMessage(`Loaded: ${pdfPath} (${this.pdfViewer.getPageCount()} pages)`, 'success');
@@ -436,9 +427,9 @@ export class ExampleView extends ItemView {
             marker.dataset.annotationId = a.id;
             marker.toggleClass('is-selected', a.id === this.selectedAnnotationId);
             marker.addEventListener('click', () => {
+                console.log('[mg] comment selected:', a.id, 'notePath=', a.notePath);
                 this.selectedAnnotationId = a.id;
                 this.renderCommentMarkers();
-                this.renderEditor(a.id);
             });
 
             const header = marker.createEl('div', { cls: 'pdf-comment-marker-header' });
@@ -449,6 +440,58 @@ export class ExampleView extends ItemView {
 
             const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
             void this.renderNotePreviewInto(a, preview);
+
+            // Inline editor inside the selected comment box (no highlighted quote shown here)
+            if (a.id === this.selectedAnnotationId) {
+                console.log('[mg] rendering inline editor for:', a.id);
+                const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
+                const textarea = editor.createEl('textarea', {
+                    cls: 'pdf-comment-inline-textarea',
+                    attr: { rows: '3', maxlength: '280', placeholder: 'Write a comment… (supports [[wikilinks]])' },
+                });
+                const footer = editor.createEl('div', { cls: 'pdf-comment-inline-footer' });
+                const saveBtn = footer.createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
+                saveBtn.disabled = true;
+
+                // Load the current comment body from the note (excluding frontmatter + quote block)
+                void (async () => {
+                    if (!a.notePath) return;
+                    const af = this.app.vault.getAbstractFileByPath(a.notePath);
+                    if (!(af instanceof TFile)) return;
+                    const md = await this.app.vault.read(af);
+                    const { frontmatter, body } = this.stripFrontmatter(md);
+                    const { quoteBlock, commentBody } = this.splitLeadingQuote(body);
+                    // stash these on the textarea dataset for save
+                    textarea.dataset.fm = frontmatter;
+                    textarea.dataset.quote = quoteBlock;
+                    textarea.value = commentBody.trimStart();
+                })();
+
+                textarea.addEventListener('click', (e) => e.stopPropagation());
+                textarea.addEventListener('input', () => {
+                    saveBtn.disabled = false;
+                });
+
+                saveBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (!a.notePath) return;
+                    const af = this.app.vault.getAbstractFileByPath(a.notePath);
+                    if (!(af instanceof TFile)) return;
+
+                    saveBtn.disabled = true;
+                    try {
+                        const fm = textarea.dataset.fm ?? '';
+                        const quote = textarea.dataset.quote ?? '';
+                        const next = `${fm}${quote}${textarea.value}\n`;
+                        await this.app.vault.modify(af, next);
+                        // Refresh preview to show new text (and keep links clickable)
+                        this.renderCommentMarkers();
+                    } catch (err) {
+                        console.warn('[comment-inline] failed to save:', err);
+                        saveBtn.disabled = false;
+                    }
+                });
+            }
         }
     }
 
@@ -505,7 +548,8 @@ export class ExampleView extends ItemView {
     }
 
     private stripFrontmatter(md: string): { frontmatter: string; body: string } {
-        const s = md ?? '';
+        // Normalize line endings so parsing works on Windows too
+        const s = (md ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         if (!s.startsWith('---')) return { frontmatter: '', body: s };
         const idx = s.indexOf('\n---', 3);
         if (idx === -1) return { frontmatter: '', body: s };
@@ -513,6 +557,24 @@ export class ExampleView extends ItemView {
         const after = s.slice(end);
         const body = after.startsWith('\n') ? after.slice(1) : after;
         return { frontmatter: s.slice(0, end) + '\n', body };
+    }
+
+    private splitLeadingQuote(body: string): { quoteBlock: string; commentBody: string } {
+        const lines = (body ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        let i = 0;
+        const quoteLines: string[] = [];
+        while (i < lines.length) {
+            const line = lines[i].replace(/^\uFEFF/, ''); // just in case
+            if (!line.startsWith('>')) break;
+            quoteLines.push(line);
+            i += 1;
+        }
+        // Skip blank lines after quote block
+        while (i < lines.length && lines[i].trim() === '') i += 1;
+
+        const commentBody = lines.slice(i).join('\n');
+        const quoteBlock = quoteLines.length ? `${quoteLines.join('\n')}\n\n` : '';
+        return { quoteBlock, commentBody };
     }
 
     private async ensurePerPdfFolder(pdfPath: string): Promise<string> {
@@ -585,7 +647,7 @@ export class ExampleView extends ItemView {
                 evt.stopPropagation();
                 try {
                     // Use Obsidian link opener so it behaves like a normal wikilink click
-                    this.app.workspace.openLinkText(href, this.selectedNoteFile?.path ?? '', true);
+                    this.app.workspace.openLinkText(href, container.dataset.mgSource ?? '', true);
                 } catch (e) {
                     console.warn('[comment-preview] failed to open link:', href, e);
                 }
@@ -596,8 +658,10 @@ export class ExampleView extends ItemView {
             const af = this.app.vault.getAbstractFileByPath(ann.notePath);
             if (af instanceof TFile) {
                 const md = await this.app.vault.read(af);
+                container.dataset.mgSource = af.path;
                 const { body } = this.stripFrontmatter(md);
-                await MarkdownRenderer.renderMarkdown(body, container, af.path, this);
+                const { commentBody } = this.splitLeadingQuote(body);
+                await MarkdownRenderer.renderMarkdown(commentBody, container, af.path, this);
                 return;
             }
         }
@@ -606,68 +670,6 @@ export class ExampleView extends ItemView {
         container.createEl('div', {
             cls: 'pdf-comment-preview-empty',
             text: fallback ? fallback : '(no note yet)',
-        });
-    }
-
-    private renderEditor(annotationId: string | null): void {
-        if (!this.editorEl) return;
-        this.editorEl.empty();
-        this.selectedNoteFile = null;
-        this.selectedNoteFrontmatter = '';
-        this.editorTextarea = null;
-        this.editorSaveBtn = null;
-
-        const header = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-header' });
-        header.createEl('div', { cls: 'pdf-comments-editor-title', text: 'Comment note' });
-
-        const body = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-body' });
-        if (!annotationId) {
-            body.createEl('div', { cls: 'pdf-comments-editor-empty', text: 'Select a comment to edit.' });
-            return;
-        }
-
-        const ann = this.annotations.find(a => a.id === annotationId) ?? null;
-        if (!ann?.notePath) {
-            body.createEl('div', { cls: 'pdf-comments-editor-empty', text: 'No note linked to this comment yet.' });
-            return;
-        }
-
-        const textarea = body.createEl('textarea', {
-            cls: 'pdf-comments-editor-textarea',
-            attr: { rows: '6', maxlength: '2000', placeholder: 'Write your comment… (supports [[wikilinks]])' },
-        });
-        this.editorTextarea = textarea;
-
-        const footer = this.editorEl.createEl('div', { cls: 'pdf-comments-editor-footer' });
-        const saveBtn = footer.createEl('button', { cls: 'pdf-comments-editor-save', text: 'Save' });
-        saveBtn.disabled = true;
-        this.editorSaveBtn = saveBtn;
-
-        void (async () => {
-            const af = this.app.vault.getAbstractFileByPath(ann.notePath!);
-            if (!(af instanceof TFile)) return;
-            this.selectedNoteFile = af;
-            const md = await this.app.vault.read(af);
-            const { frontmatter, body } = this.stripFrontmatter(md);
-            this.selectedNoteFrontmatter = frontmatter;
-            textarea.value = body;
-        })();
-
-        textarea.addEventListener('input', () => {
-            saveBtn.disabled = false;
-        });
-
-        saveBtn.addEventListener('click', async () => {
-            if (!this.selectedNoteFile || !this.editorTextarea) return;
-            saveBtn.disabled = true;
-            try {
-                const next = `${this.selectedNoteFrontmatter}${this.editorTextarea.value}`;
-                await this.app.vault.modify(this.selectedNoteFile, next);
-                this.renderCommentMarkers();
-            } catch (e) {
-                console.warn('[comment-note] failed to save note:', e);
-                saveBtn.disabled = false;
-            }
         });
     }
 
@@ -816,7 +818,6 @@ export class ExampleView extends ItemView {
         // Auto-select for editing
         this.selectedAnnotationId = ann.id;
         this.renderCommentMarkers();
-        this.renderEditor(ann.id);
 
         console.log('[comment]', {
             selectedText: text,

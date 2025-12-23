@@ -129,6 +129,9 @@
     box-sizing: border-box;
     overflow: hidden;
     cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .pdf-comment-marker.is-selected {
@@ -141,7 +144,7 @@
     border-radius: 8px;
     padding: 8px 10px;
     box-sizing: border-box;
-    margin-bottom: 8px;
+    flex: 0 0 auto;
 }
 
 .pdf-comment-marker-snippet {
@@ -159,8 +162,9 @@
     border-radius: 8px;
     padding: 10px;
     box-sizing: border-box;
-    height: calc(240px - 10px - 10px - 38px); /* markerHeight - outerPadding*2 - header(approx) */
     overflow: auto;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .pdf-comment-preview-empty {
@@ -168,56 +172,32 @@
     color: rgba(0, 0, 0, 0.7);
 }
 
-.pdf-comments-editor {
-    position: sticky;
-    bottom: 0;
-    z-index: 5;
-    background: var(--background-primary);
-    border-top: 1px solid var(--background-modifier-border);
-    padding: 10px 12px;
+.pdf-comment-inline-editor {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 8px;
+    padding: 10px;
     box-sizing: border-box;
+    flex: 0 0 auto;
 }
 
-.pdf-comments-editor-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-}
-
-.pdf-comments-editor-title {
-    font-size: 12px;
-    color: var(--text-muted);
-}
-
-.pdf-comments-editor-body {
-    margin-bottom: 8px;
-}
-
-.pdf-comments-editor-empty {
-    font-size: 12px;
-    color: var(--text-muted);
-    padding: 6px 0;
-}
-
-.pdf-comments-editor-textarea {
+.pdf-comment-inline-textarea {
     width: 100%;
     resize: none;
     box-sizing: border-box;
     font-size: 12px;
     padding: 8px;
     border-radius: 8px;
-    border: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary);
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    background: rgba(255, 255, 255, 0.98);
 }
 
-.pdf-comments-editor-footer {
+.pdf-comment-inline-footer {
     display: flex;
     justify-content: flex-end;
-    align-items: center;
+    margin-top: 8px;
 }
 
-.pdf-comments-editor-save {
+.pdf-comment-inline-save {
     background: #7c3aed;
     border: 1px solid rgba(0, 0, 0, 0.08);
     color: white;
@@ -227,7 +207,7 @@
     cursor: pointer;
 }
 
-.pdf-comments-editor-save:disabled {
+.pdf-comment-inline-save:disabled {
     opacity: 0.6;
     cursor: not-allowed;
 }
