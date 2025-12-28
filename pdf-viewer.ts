@@ -39,6 +39,9 @@ export class PDFViewerComponent {
     private workerSrc?: string;
     private revokeWorkerSrc?: boolean;
     private previewScale: number | null = null;
+    private renderGeneration: number = 0;
+    private inFlightRenderTasks: Map<number, any> = new Map();
+    private backgroundRenderGen: number | null = null;
 
     constructor(
         container: HTMLElement,
@@ -58,6 +61,192 @@ export class PDFViewerComponent {
         
         // Set up selection change handler
         this.container.addEventListener('mouseup', () => this.handleSelectionChange());
+    }
+
+    private cancelInFlightRenders(): void {
+        for (const task of this.inFlightRenderTasks.values()) {
+            try {
+                // PDF.js render tasks have cancel()
+                if (task && typeof task.cancel === 'function') task.cancel();
+            } catch {
+                // ignore
+            }
+        }
+        this.inFlightRenderTasks.clear();
+    }
+
+    private getScrollContainer(): HTMLElement | null {
+        return this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+    }
+
+    private getOrderedPageNumbersFromDom(): number[] {
+        const sc = this.getScrollContainer();
+        if (!sc) return [];
+        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const nums: number[] = [];
+        for (const el of els) {
+            const n = Number(el.dataset.pageNumber ?? NaN);
+            if (Number.isFinite(n)) nums.push(n);
+        }
+        nums.sort((a, b) => a - b);
+        return nums;
+    }
+
+    private getVisiblePageNumbers(bufferPx: number): number[] {
+        const sc = this.getScrollContainer();
+        if (!sc) return [];
+
+        const viewTop = this.container.scrollTop;
+        const viewBottom = viewTop + this.container.clientHeight;
+        const topBound = Math.max(0, viewTop - bufferPx);
+        const bottomBound = viewBottom + bufferPx;
+
+        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        const out: number[] = [];
+        for (const el of els) {
+            const top = el.offsetTop;
+            const bottom = top + el.offsetHeight;
+            if (bottom < topBound || top > bottomBound) continue;
+            const n = Number(el.dataset.pageNumber ?? NaN);
+            if (Number.isFinite(n)) out.push(n);
+        }
+        out.sort((a, b) => a - b);
+        return out;
+    }
+
+    private scaleExistingPageBoxSizes(factor: number): void {
+        const sc = this.getScrollContainer();
+        if (!sc) return;
+        const els = Array.from(sc.querySelectorAll('.pdf-page-container')) as HTMLElement[];
+        for (const el of els) {
+            const w0 = parseFloat(el.style.width) || el.offsetWidth || 0;
+            const h0 = parseFloat(el.style.height) || el.offsetHeight || 0;
+            if (w0 > 0) el.style.width = `${w0 * factor}px`;
+            if (h0 > 0) el.style.height = `${h0 * factor}px`;
+        }
+    }
+
+    private async renderPageIntoContainer(pageNum: number, generation: number): Promise<void> {
+        if (!this.pdfDoc) return;
+        if (generation !== this.renderGeneration) return;
+
+        const sc = this.getScrollContainer();
+        if (!sc) return;
+
+        const pageContainer = this.pageContainers.get(pageNum) ??
+            (sc.querySelector(`.pdf-page-container[data-page-number="${pageNum}"]`) as HTMLElement | null);
+        if (!pageContainer) return;
+        this.pageContainers.set(pageNum, pageContainer);
+
+        const pdfjs = getPdfJs();
+        const page: PDFPageProxy = await this.pdfDoc.getPage(pageNum);
+        if (generation !== this.renderGeneration) return;
+
+        const viewport = page.getViewport({ scale: this.currentScale });
+        pageContainer.style.width = `${viewport.width}px`;
+        pageContainer.style.height = `${viewport.height}px`;
+
+        const highlightLayer = pageContainer.querySelector('.pdf-highlight-layer') as HTMLElement | null;
+        const oldCanvases = Array.from(pageContainer.querySelectorAll('.pdf-page-canvas'));
+        const oldTextLayers = Array.from(pageContainer.querySelectorAll('.pdf-text-layer'));
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'pdf-page-canvas';
+        const context = canvas.getContext('2d');
+        if (!context) return;
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        // Render the page to canvas (cancellable best-effort).
+        const renderTask = page.render({ canvasContext: context, viewport });
+        this.inFlightRenderTasks.set(pageNum, renderTask);
+        try {
+            if (renderTask?.promise) {
+                await renderTask.promise;
+            } else {
+                // Older PDF.js may return a promise directly
+                await (renderTask as any);
+            }
+        } catch {
+            // cancelled or failed; ignore if superseded
+            if (generation !== this.renderGeneration) return;
+            return;
+        } finally {
+            // Only delete if this task is still the current one for this page.
+            const cur = this.inFlightRenderTasks.get(pageNum);
+            if (cur === renderTask) this.inFlightRenderTasks.delete(pageNum);
+        }
+        if (generation !== this.renderGeneration) return;
+
+        // Swap in new layers atomically-ish: remove old after new is ready, preserving highlight layer.
+        for (const el of oldCanvases) {
+            try { el.remove(); } catch { /* ignore */ }
+        }
+        if (highlightLayer) {
+            pageContainer.insertBefore(canvas, highlightLayer);
+        } else {
+            pageContainer.appendChild(canvas);
+        }
+
+        const textLayerDiv = document.createElement('div');
+        textLayerDiv.className = 'pdf-text-layer';
+        const textContent = await page.getTextContent();
+        if (generation !== this.renderGeneration) return;
+        await this.renderTextLayer(textLayerDiv, textContent, viewport, pdfjs);
+        if (generation !== this.renderGeneration) return;
+
+        for (const el of oldTextLayers) {
+            try { el.remove(); } catch { /* ignore */ }
+        }
+        if (highlightLayer) {
+            pageContainer.insertBefore(textLayerDiv, highlightLayer);
+        } else {
+            pageContainer.appendChild(textLayerDiv);
+        }
+    }
+
+    private async renderPagesWithConcurrency(
+        pages: number[],
+        generation: number,
+        concurrency: number
+    ): Promise<void> {
+        if (!pages.length) return;
+        const limit = Math.max(1, Math.floor(concurrency));
+        let idx = 0;
+
+        const worker = async () => {
+            while (true) {
+                if (generation !== this.renderGeneration) return;
+                const nextIdx = idx;
+                idx += 1;
+                if (nextIdx >= pages.length) return;
+                const pageNum = pages[nextIdx];
+                await this.renderPageIntoContainer(pageNum, generation);
+            }
+        };
+
+        const workers = Array.from({ length: Math.min(limit, pages.length) }, () => worker());
+        await Promise.all(workers);
+    }
+
+    private scheduleBackgroundRender(pages: number[], generation: number, concurrency: number): void {
+        if (!pages.length) return;
+        this.backgroundRenderGen = generation;
+
+        const run = async () => {
+            // If superseded, bail.
+            if (generation !== this.renderGeneration) return;
+            await this.renderPagesWithConcurrency(pages, generation, concurrency);
+        };
+
+        // Prefer idle time if available; fall back to setTimeout.
+        const ric = (window as any).requestIdleCallback as ((cb: () => void) => number) | undefined;
+        if (typeof ric === 'function') {
+            ric(() => { void run(); });
+        } else {
+            window.setTimeout(() => { void run(); }, 0);
+        }
     }
 
     /**
@@ -269,19 +458,48 @@ export class PDFViewerComponent {
         if (scale === this.currentScale || !this.pdfDoc) return;
         // A real re-render should always happen from a clean visual state.
         this.clearPreviewScale();
-        
+
+        const prevScale = this.currentScale;
         this.currentScale = scale;
-        
-        // Re-render all pages with new scale
-        const scrollContainer = this.container.querySelector('.pdf-scroll-container');
-        if (scrollContainer) {
-            scrollContainer.innerHTML = '';
-            this.pageContainers.clear();
-            
-            for (let pageNum = 1; pageNum <= this.pdfDoc.numPages; pageNum++) {
-                await this.renderPage(pageNum, scrollContainer as HTMLElement);
-            }
+
+        // Cancel any in-flight renders from a previous scale and bump generation.
+        this.renderGeneration += 1;
+        const generation = this.renderGeneration;
+        this.cancelInFlightRenders();
+
+        const sc = this.getScrollContainer();
+        if (!sc) return;
+
+        // Keep scroll geometry stable by scaling existing page boxes immediately.
+        // This makes downstream overlays (comments/highlights) re-align sooner once the caller re-renders them.
+        const factor = prevScale ? (scale / prevScale) : 1;
+        if (Number.isFinite(factor) && factor > 0) {
+            this.scaleExistingPageBoxSizes(factor);
         }
+
+        // Phase 1: render visible pages first (fast path)
+        const visible = this.getVisiblePageNumbers(600);
+        const all = this.getOrderedPageNumbersFromDom();
+        const visibleSet = new Set<number>(visible);
+        const remaining = all.filter((n) => !visibleSet.has(n));
+
+        // If we somehow don't have DOM pages yet, fall back to the original full render.
+        if (!all.length) {
+            sc.innerHTML = '';
+            this.pageContainers.clear();
+            for (let pageNum = 1; pageNum <= this.pdfDoc.numPages; pageNum++) {
+                if (generation !== this.renderGeneration) return;
+                await this.renderPage(pageNum, sc);
+            }
+            return;
+        }
+
+        // Render visible pages with small concurrency (keeps UI responsive)
+        await this.renderPagesWithConcurrency(visible.length ? visible : all.slice(0, 2), generation, 2);
+        if (generation !== this.renderGeneration) return;
+
+        // Phase 2: render the rest in the background (do not await)
+        this.scheduleBackgroundRender(remaining, generation, 2);
     }
 
     /**
@@ -304,6 +522,9 @@ export class PDFViewerComponent {
     destroy(): void {
         this.contextMenu.hide();
         this.clearPreviewScale();
+        // Cancel any ongoing work
+        this.renderGeneration += 1;
+        this.cancelInFlightRenders();
         if (this.pdfDoc) {
             this.pdfDoc.destroy();
             this.pdfDoc = null;
