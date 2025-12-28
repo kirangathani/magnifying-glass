@@ -104,6 +104,7 @@ export class ExampleView extends ItemView {
     private pendingFocusAnnotationId: string | null = null;
     private pendingNoteCreation: Map<string, Promise<TFile>> = new Map();
     private deselectHandler: ((e: MouseEvent) => void) | null = null;
+    private pinchWheelHandler: ((e: WheelEvent) => void) | null = null;
 
     constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
         super(leaf);
@@ -244,6 +245,72 @@ export class ExampleView extends ItemView {
             // Create empty comments pane (right)
             this.commentsPane = this.viewerRow.createEl('div', { cls: 'pdf-comments-pane' });
             this.commentsTrack = this.commentsPane.createEl('div', { cls: 'pdf-comments-track' });
+
+            // Trackpad pinch-to-zoom (typically arrives as Ctrl+wheel on Chromium/Electron).
+            // We do a two-phase zoom:
+            // - Preview: CSS transform on the rendered pages for smooth feedback (markers may drift during pinch).
+            // - Commit: debounce and re-render crisply via pdfViewer.setScale().
+            let pinchTargetScale: number | null = null;
+            let pinchCommitTimer: number | null = null;
+            const clampScale = (s: number) => Math.max(0.5, Math.min(3, s));
+            const schedulePinchCommit = () => {
+                if (pinchCommitTimer) window.clearTimeout(pinchCommitTimer);
+                pinchCommitTimer = window.setTimeout(async () => {
+                    if (!this.pdfViewer || pinchTargetScale == null) return;
+                    try {
+                        isZooming = true;
+                        updateZoomButtonsState();
+                        await this.pdfViewer.setScale(pinchTargetScale);
+                        // Ensure we end in a non-preview state
+                        if (typeof this.pdfViewer.clearPreviewScale === 'function') {
+                            this.pdfViewer.clearPreviewScale();
+                        }
+                        zoomLabel.textContent = `${Math.round(this.pdfViewer.getScale() * 100)}%`;
+                    } finally {
+                        isZooming = false;
+                        updateZoomButtonsState();
+                        this.updateCommentsTrackHeight();
+                        this.renderCommentMarkers();
+                        this.renderHighlights();
+                        pinchTargetScale = null;
+                    }
+                }, 160);
+            };
+            if (!this.pinchWheelHandler) {
+                this.pinchWheelHandler = (e: WheelEvent) => {
+                    // On most trackpads, pinch zoom comes through as ctrlKey+wheel.
+                    if (!e.ctrlKey) return;
+                    if (!this.pdfViewer) return;
+                    // Don't fight a committed rerender in progress
+                    if (isLoadingPdf || isZooming) {
+                        e.preventDefault();
+                        return;
+                    }
+
+                    // Consume so Obsidian/global zoom handlers don't interfere.
+                    e.preventDefault();
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    (e as any).stopImmediatePropagation?.();
+                    e.stopPropagation();
+
+                    const base = pinchTargetScale ?? (typeof this.pdfViewer.getScale === 'function' ? this.pdfViewer.getScale() : 1.5);
+                    // Smooth exponential mapping. deltaY > 0 means "zoom out" on Chromium.
+                    const factor = Math.exp(-e.deltaY * 0.002);
+                    const next = clampScale(base * factor);
+                    pinchTargetScale = next;
+
+                    // Preview zoom (visual only)
+                    if (typeof this.pdfViewer.setPreviewScale === 'function') {
+                        this.pdfViewer.setPreviewScale(next);
+                    }
+                    zoomLabel.textContent = `${Math.round(next * 100)}%`;
+
+                    // Let the user keep pinching; commit after a short pause.
+                    schedulePinchCommit();
+                };
+                // passive:false is required for preventDefault to work
+                this.pdfContainer.addEventListener('wheel', this.pinchWheelHandler, { passive: false });
+            }
 
             // Deselect comment when clicking outside comment boxes (in PDF area or blank space in comments pane)
             if (!this.deselectHandler) {
@@ -469,6 +536,10 @@ export class ExampleView extends ItemView {
             this.pdfViewer.destroy();
             this.pdfViewer = null;
         }
+        if (this.pinchWheelHandler) {
+            try { this.pdfContainer?.removeEventListener('wheel', this.pinchWheelHandler as any); } catch { /* ignore */ }
+            this.pinchWheelHandler = null;
+        }
         if (this.inlineKeyHandler) {
             window.removeEventListener('keydown', this.inlineKeyHandler, true);
             this.inlineKeyHandler = null;
@@ -513,10 +584,8 @@ export class ExampleView extends ItemView {
                 this.renderCommentMarkers();
             });
 
-            const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
-            void this.renderNotePreviewInto(a, preview);
-
-            // Inline editor inside the selected comment box (no highlighted quote shown here)
+            // While editing (selected), hide the preview entirely.
+            // Preview only shows when not editing (after save/deselect).
             if (a.id === this.selectedAnnotationId) {
                 const editor = marker.createEl('div', { cls: 'pdf-comment-inline-editor' });
                 const textarea = editor.createEl('textarea', {
@@ -638,6 +707,9 @@ export class ExampleView extends ItemView {
                     e.stopPropagation();
                     void doSave();
                 });
+            } else {
+                const preview = marker.createEl('div', { cls: 'pdf-comment-preview' });
+                void this.renderNotePreviewInto(a, preview);
             }
         }
     }

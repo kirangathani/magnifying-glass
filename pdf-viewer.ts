@@ -38,6 +38,7 @@ export class PDFViewerComponent {
     private onTextSelected: ((text: string) => void) | null = null;
     private workerSrc?: string;
     private revokeWorkerSrc?: boolean;
+    private previewScale: number | null = null;
 
     constructor(
         container: HTMLElement,
@@ -60,6 +61,32 @@ export class PDFViewerComponent {
     }
 
     /**
+     * Apply a temporary visual-only zoom (CSS transform) without re-rendering pages.
+     * This is useful for pinch-to-zoom gestures; callers should later call setScale()
+     * to re-render at the new scale and then clearPreviewScale().
+     */
+    setPreviewScale(scale: number): void {
+        this.previewScale = scale;
+        const scrollContainer = this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+        if (!scrollContainer) return;
+
+        const factor = scale / (this.currentScale || 1);
+        scrollContainer.style.transformOrigin = '0 0';
+        scrollContainer.style.transform = `scale(${factor})`;
+    }
+
+    /**
+     * Remove any temporary preview zoom transform.
+     */
+    clearPreviewScale(): void {
+        this.previewScale = null;
+        const scrollContainer = this.container.querySelector('.pdf-scroll-container') as HTMLElement | null;
+        if (!scrollContainer) return;
+        scrollContainer.style.transform = '';
+        scrollContainer.style.transformOrigin = '';
+    }
+
+    /**
      * Load a PDF from an ArrayBuffer
      */
     async loadPdf(data: ArrayBuffer): Promise<void> {
@@ -69,6 +96,8 @@ export class PDFViewerComponent {
             if (this.workerSrc && pdfjs?.GlobalWorkerOptions) {
                 pdfjs.GlobalWorkerOptions.workerSrc = this.workerSrc;
             }
+            // Ensure no stale preview transform survives a fresh load.
+            this.clearPreviewScale();
             
             // Clear previous content
             this.container.empty();
@@ -238,6 +267,8 @@ export class PDFViewerComponent {
      */
     async setScale(scale: number): Promise<void> {
         if (scale === this.currentScale || !this.pdfDoc) return;
+        // A real re-render should always happen from a clean visual state.
+        this.clearPreviewScale();
         
         this.currentScale = scale;
         
@@ -272,6 +303,7 @@ export class PDFViewerComponent {
      */
     destroy(): void {
         this.contextMenu.hide();
+        this.clearPreviewScale();
         if (this.pdfDoc) {
             this.pdfDoc.destroy();
             this.pdfDoc = null;
