@@ -404,23 +404,47 @@ class PdfCommenterSettingTab extends PluginSettingTab {
 			.setName('Comments folder')
 			.setDesc('Vault-relative folder that all per-PDF comment folders live under. Leave empty for the vault root.')
 			.addText(text => {
+				/** Returns the normalised path, or an error message. */
+				const check = (value: string): { path: string } | { error: string } => {
+					const result = validateRootFolder(value);
+					if (!result.ok) return { error: result.error };
+					const clash = this.app.vault.getAbstractFileByPath(result.path);
+					if (result.path && clash && !(clash instanceof TFolder)) {
+						return { error: `"${result.path}" is an existing file, not a folder.` };
+					}
+					return { path: result.path };
+				};
+
+				const showError = (message: string | null) => {
+					rootError?.setText(message ?? '');
+					// The field keeps showing the rejected text, so mark it: an
+					// inline message alone is easy to miss under the autocomplete.
+					text.inputEl.toggleClass('pdf-commenter-input-invalid', message !== null);
+				};
+
 				text.setPlaceholder('e.g. Comments')
 					.setValue(this.plugin.settings.commentsRootFolder)
 					.onChange(async (value) => {
-						const result = validateRootFolder(value);
-						if (!result.ok) {
-							if (rootError) rootError.setText(result.error);
+						const result = check(value);
+						if ('error' in result) {
+							showError(result.error);
 							return;
 						}
-						const clash = this.app.vault.getAbstractFileByPath(result.path);
-						if (result.path && clash && !(clash instanceof TFolder)) {
-							if (rootError) rootError.setText('A file already exists at that path.');
-							return;
-						}
-						if (rootError) rootError.setText('');
+						showError(null);
 						this.plugin.settings.commentsRootFolder = result.path;
 						await this.plugin.saveSettings();
 					});
+
+				// Leaving the field invalid would otherwise strand the user on a
+				// value that was never saved, so revert to what is actually in use.
+				text.inputEl.addEventListener('blur', () => {
+					const result = check(text.inputEl.value);
+					if (!('error' in result)) return;
+					new Notice(`PDF Commenter: ${result.error} Reverted to "${this.plugin.settings.commentsRootFolder || 'vault root'}".`);
+					text.setValue(this.plugin.settings.commentsRootFolder);
+					showError(null);
+				});
+
 				new FolderSuggest(this.app, text.inputEl);
 			});
 		rootError = containerEl.createEl('p', { cls: 'pdf-commenter-setting-error', text: '' });

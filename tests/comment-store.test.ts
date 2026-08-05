@@ -106,6 +106,32 @@ test('a file squatting on the target path is stepped past, not overwritten', asy
 	assert.equal(app.vault.read_('Report'), 'a file, not a folder');
 });
 
+test('a file on an intermediate segment of the root fails loudly', async () => {
+	// The root is set to `Foo`, then a *file* called `Foo` appears. Creating the
+	// folder is impossible; the caller must find out rather than silently lose
+	// the comment.
+	const { app, store } = setup({ commentsRootFolder: 'Foo', mirrorVaultStructure: true });
+	app.vault.seedFile('Papers/A.pdf', '%PDF');
+	app.vault.seedFile('Foo', 'a file, not a folder');
+
+	await assert.rejects(
+		() => store.resolveCommentsFolder('Papers/A.pdf', []),
+		/"Foo" is a file, not a folder/
+	);
+});
+
+test('a failed folder chain leaves no half-created folders behind', async () => {
+	const { app, store } = setup({ commentsRootFolder: 'Foo/Bar/Baz', mirrorVaultStructure: false });
+	app.vault.seedFile('A.pdf', '%PDF');
+	app.vault.seedFolder('Foo');
+	app.vault.seedFile('Foo/Bar', 'a file, not a folder');
+	const before = app.vault.paths();
+
+	await assert.rejects(() => store.resolveCommentsFolder('A.pdf', []));
+
+	assert.deepEqual(app.vault.paths(), before, 'partial folders were created before failing');
+});
+
 test('two PDFs sharing a basename get separate folders when mirroring', async () => {
 	const { app, store } = setup({ commentsRootFolder: 'Comments', mirrorVaultStructure: true });
 	app.vault.seedFile('Papers/Dutta 2024.pdf', '%PDF');

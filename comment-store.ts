@@ -109,22 +109,39 @@ export class CommentStore {
 		return null;
 	}
 
-	/** Create every missing segment of a folder path. */
+	/**
+	 * Create every missing segment of a folder path.
+	 *
+	 * The whole chain is checked before anything is created, so a file sitting
+	 * on an intermediate segment fails cleanly instead of leaving half the
+	 * folders behind.
+	 */
 	async ensureFolder(path: string): Promise<void> {
 		const normalized = normalizePath(path);
 		if (!normalized || normalized === '/') return;
 		const segments = normalized.split('/').filter(Boolean);
+
+		const prefixes: string[] = [];
 		let prefix = '';
 		for (const seg of segments) {
 			prefix = prefix ? `${prefix}/${seg}` : seg;
-			const existing = this.app.vault.getAbstractFileByPath(prefix);
-			if (existing instanceof TFolder) continue;
-			if (existing) throw new Error(`Cannot create comments folder: "${prefix}" is a file.`);
+			prefixes.push(prefix);
+		}
+
+		for (const p of prefixes) {
+			const existing = this.app.vault.getAbstractFileByPath(p);
+			if (existing && !(existing instanceof TFolder)) {
+				throw new Error(`Cannot create the comments folder: "${p}" is a file, not a folder.`);
+			}
+		}
+
+		for (const p of prefixes) {
+			if (this.app.vault.getAbstractFileByPath(p) instanceof TFolder) continue;
 			try {
-				await this.app.vault.createFolder(prefix);
+				await this.app.vault.createFolder(p);
 			} catch (e) {
 				// Another caller may have created it between the check and here.
-				if (!(this.app.vault.getAbstractFileByPath(prefix) instanceof TFolder)) throw e;
+				if (!(this.app.vault.getAbstractFileByPath(p) instanceof TFolder)) throw e;
 			}
 		}
 	}

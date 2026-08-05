@@ -727,6 +727,10 @@ body.pdf-commenter-dark {
     display: none;
 }
 
+.pdf-commenter-input-invalid {
+    border-color: var(--text-error) !important;
+}
+
 /* Migration confirmation dialog */
 .pdf-commenter-migration-list {
     max-height: 40vh;

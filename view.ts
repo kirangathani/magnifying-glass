@@ -1,4 +1,4 @@
-import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath, FileSystemAdapter } from 'obsidian';
+import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, Notice, normalizePath, FileSystemAdapter } from 'obsidian';
 import { WikilinkSuggest } from './wikilink-suggest';
 import { ContextMenuAction } from './context-menu';
 import type { IPDFViewer } from './pdf-viewer';
@@ -1223,7 +1223,7 @@ export class PdfCommenterView extends FileView {
                         a.notePath = note.path;
                         await this.saveAnnotationsForCurrentPdf();
                     } catch (e) {
-                        console.warn('[comment-inline] note creation failed:', e);
+                        this.reportNoteFailure(e);
                         return;
                     }
                 } else if (this.file) {
@@ -1238,7 +1238,7 @@ export class PdfCommenterView extends FileView {
                         const note = await p;
                         a.notePath = note.path;
                     } catch (e) {
-                        console.warn('[comment-inline] note creation failed:', e);
+                        this.reportNoteFailure(e);
                         return;
                     } finally {
                         this.pendingNoteCreation.delete(a.id);
@@ -1535,6 +1535,17 @@ export class PdfCommenterView extends FileView {
     }
 
     /**
+     * Surface a failed comment-note write. Silence here is the worst outcome:
+     * the comment shows in the pane while nothing is on disk, so the user
+     * believes it was saved.
+     */
+    private reportNoteFailure(e: unknown): void {
+        const message = e instanceof Error ? e.message : String(e);
+        console.warn('[comment-note] could not write the comment note:', e);
+        new Notice(`PDF Commenter: the comment could not be saved. ${message}`, 10000);
+    }
+
+    /**
      * The folder this PDF's comment notes go in, created on demand.
      *
      * Deliberately lazy: merely opening a PDF must not litter the vault with an
@@ -1667,9 +1678,17 @@ export class PdfCommenterView extends FileView {
 
             for (const ann of this.annotations) {
                 if (!ann.notePath) {
-                    const note = await this.createCommentNote(ann);
-                    ann.notePath = note.path;
-                    dirty = true;
+                    // Caught per annotation: a folder that cannot be created must
+                    // not fall through to the outer catch, which would blank the
+                    // whole comment list in the UI.
+                    try {
+                        const note = await this.createCommentNote(ann);
+                        ann.notePath = note.path;
+                        dirty = true;
+                    } catch (e) {
+                        this.reportNoteFailure(e);
+                        break;
+                    }
                 }
             }
             if (dirty) await this.saveAnnotationsForCurrentPdf();
@@ -1918,7 +1937,9 @@ export class PdfCommenterView extends FileView {
                 return note;
             })();
             this.pendingNoteCreation.set(ann.id, createPromise);
-            void createPromise.finally(() => this.pendingNoteCreation.delete(ann.id));
+            void createPromise
+                .catch((e) => this.reportNoteFailure(e))
+                .finally(() => this.pendingNoteCreation.delete(ann.id));
         }
     }
 
