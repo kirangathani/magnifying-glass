@@ -706,3 +706,41 @@ body.pdf-commenter-dark {
 .is-hidden {
     display: none;
 }
+
+/* ---------------------------------------------------------------------------
+   Settings tab
+   --------------------------------------------------------------------------- */
+
+.pdf-commenter-build-stamp {
+    margin: 0 0 1em 0;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+}
+
+.pdf-commenter-setting-error {
+    margin: -0.5em 0 1em 0;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-error);
+}
+
+.pdf-commenter-setting-error:empty {
+    display: none;
+}
+
+/* Migration confirmation dialog */
+.pdf-commenter-migration-list {
+    max-height: 40vh;
+    overflow-y: auto;
+    padding-left: 1.2em;
+    font-size: var(--font-ui-smaller);
+}
+
+.pdf-commenter-migration-list li {
+    margin-bottom: 0.35em;
+    word-break: break-word;
+}
+
+.pdf-commenter-migration-note {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+}

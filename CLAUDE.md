@@ -18,11 +18,17 @@ All source files are in the repo root (no `src/` directory).
 | `pdf.worker.js` | Copied from `pdfjs-dist` at build time by esbuild plugin. Shipped alongside `main.js` in the plugin folder. Loaded at runtime via blob URL to avoid CORS issues with Obsidian's `app://` protocol. |
 | `esbuild.config.mjs` | Build config. Single entry point `main.ts` → `main.js` (CJS). Custom plugin `copy-pdf-worker` copies the pdfjs worker file post-build. |
 | `wikilink-suggest.ts` | `WikilinkSuggest` class. Inline autocomplete popup for `[[wikilinks]]` in the comment textarea. Fuzzy-filters vault markdown files, keyboard nav, positioned below/above textarea. |
+| `types.ts` | Shared sidecar data types (`PdfAnnotation`, `PdfAnnotationsFile`, …). No imports, so any module can use them. |
+| `settings.ts` | `PdfCommenterSettings` shape and `DEFAULT_SETTINGS`. Separate from `main.ts` so `view.ts`/`comment-store.ts` can depend on the type without a circular import. |
+| `comment-paths.ts` | Pure path arithmetic: comment-folder targets, root validation, prefix-safe rewriting, migration planning. Imports nothing from `obsidian`, so it is unit-testable. |
+| `comment-store.ts` | All vault reads/writes for sidecars and comment folders. Single owner of the PDF ↔ sidecar ↔ folder ↔ note relationship, so a rename from the plugin UI and one from the file explorer run identical code. |
+| `tests/` | `node --test` suite over `comment-paths.ts` and `comment-store.ts` (the latter against an in-memory vault mock in `tests/vault-mock.ts`, with `obsidian` aliased to `tests/obsidian-stub.ts`). |
 | `manifest.json` | Plugin id `pdf-commenter`, name `PDF Commenter`. `minAppVersion: 0.15.0`, `isDesktopOnly: true`. |
 
 ## Build & Dev
 
 - **Dev mode**: `npm run dev` — esbuild watch mode with inline source maps.
+- **Tests**: `npm test` — bundles `tests/*.test.ts` to ESM and runs `node --test`. Only modules that do not need a live Obsidian app are covered.
 - **Production**: `npm run build` — type-checks with `tsc -noEmit`, then esbuild with minification, no source maps.
 - **Version bump**: `npm run version` — runs `version-bump.mjs`, updates `manifest.json` and `versions.json`.
 - Output: `main.js` (gitignored), `pdf.worker.js`, `styles.css`, `manifest.json` go into the plugin folder.
@@ -62,7 +68,9 @@ type PdfAnnotation = {
 ### Storage
 
 - **Sidecar JSON**: `<pdfPath>.mg-comments.json` — `PdfAnnotationsFile` with `version: 1`, stores all annotations for a PDF.
-- **Per-PDF folder**: A folder named after the PDF (sanitised) is created in the vault root. Each annotation gets a markdown note inside this folder: `comment-<isoDate>-<id>.md`.
+- **Per-PDF folder**: A folder named after the PDF (sanitised) holds that PDF's comment notes, one per annotation: `comment-<isoDate>-<id>.md`. Where the folder goes is controlled by two settings: `commentsRootFolder` (default `''` = vault root) and `mirrorVaultStructure` (default `true`, reproducing the PDF's own folder path inside the root so two PDFs sharing a basename do not collide). Created lazily, on the first note written — merely opening a PDF creates nothing.
+- **Folder resolution follows the notes, not the settings**: for a PDF that already has annotations, the folder is the parent of a recorded `notePath`, so changing settings never strands or splits existing comments. Only a PDF with no notes yet is placed by the current settings. Relocating existing folders is an explicit, confirmed action (settings button / `reorganise-comment-folders` command), because changing a setting moves nothing on disk and so fires no vault event.
+- **Renames and moves**: a single `vault.on('rename')` listener in `main.ts` delegates to `CommentStore`, covering PDFs, comment notes and folders, whether moved from the file explorer, the plugin's own rename box, or Obsidian Sync. `CommentStore` suppresses re-entrancy while performing its own moves.
 - **Note format**: YAML frontmatter (`pdfPath`, `annotationId`, `pageNumber`, `yNorm`, `createdAt`) + blockquote of selected text + user comment body.
 - On load, annotations missing `notePath` are auto-migrated (notes created, sidecar updated).
 
@@ -84,7 +92,7 @@ The worker file cannot be loaded via `plugin:` URLs due to CORS restrictions in 
 
 ## Known Issues / Debt
 
-- No automated tests.
+- No automated tests for the view layer (UI, zoom, scroll sync); `comment-paths.ts` and `comment-store.ts` are covered by `npm test`.
 - No way to delete a comment that already has content.
 - No error recovery if sidecar JSON is corrupted.
 - Annotations are tied to absolute text positions; replacing the PDF with a different version silently misaligns them.

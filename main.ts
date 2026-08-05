@@ -1,23 +1,30 @@
-import { Plugin, PluginManifest, PluginSettingTab, Setting, FuzzySuggestModal, TFile, App } from "obsidian";
+import {
+	AbstractInputSuggest,
+	App,
+	FileSystemAdapter,
+	FuzzySuggestModal,
+	Modal,
+	Notice,
+	Plugin,
+	PluginManifest,
+	PluginSettingTab,
+	Setting,
+	TAbstractFile,
+	TFile,
+	TFolder,
+} from "obsidian";
+import { statSync } from 'fs';
+import { join } from 'path';
 import { VIEW_TYPE_PDF_COMMENTER, PdfCommenterView } from './view';
+import { CommentStore } from './comment-store';
+import { MIGRATION_SKIP_LABELS, MigrationPlan, validateRootFolder } from './comment-paths';
+import { DEFAULT_SETTINGS, PdfCommenterSettings } from './settings';
 
 type AppWithViewRegistry = App & {
 	viewRegistry: {
 		registerExtensions(exts: string[], type: string): void;
 		unregisterExtensions(exts: string[]): void;
 	};
-};
-
-interface PdfCommenterSettings {
-	accentColor: string;
-	useObsidianAccent: boolean;
-	darkMode: 'auto' | 'light' | 'dark';
-}
-
-const DEFAULT_SETTINGS: PdfCommenterSettings = {
-	accentColor: '#7c3aed',
-	useObsidianAccent: false,
-	darkMode: 'auto',
 };
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -106,10 +113,12 @@ class PdfFileSuggestModal extends FuzzySuggestModal<TFile> {
 
 export default class PdfCommenterPlugin extends Plugin {
 	settings: PdfCommenterSettings = DEFAULT_SETTINGS;
+	store!: CommentStore;
 	private darkModeObserver: MutationObserver | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.store = new CommentStore(this.app, () => this.settings);
 		this.applyAccent();
 		this.applyDarkMode();
 		this.addSettingTab(new PdfCommenterSettingTab(this.app, this));
@@ -118,8 +127,30 @@ export default class PdfCommenterPlugin extends Plugin {
 			VIEW_TYPE_PDF_COMMENTER,
 			// NOTE: Obsidian's runtime manifest includes `dir` (folder name under .obsidian/plugins).
 			// This can differ from `id` during development if the folder name doesn't match.
-			(leaf) => new PdfCommenterView(leaf, { pluginId: this.manifest.id, pluginDir: (this.manifest as PluginManifest & { dir?: string }).dir ?? this.manifest.id })
+			(leaf) => new PdfCommenterView(leaf, {
+				pluginId: this.manifest.id,
+				pluginDir: (this.manifest as PluginManifest & { dir?: string }).dir ?? this.manifest.id,
+				store: this.store,
+			})
 		);
+
+		// A PDF, a comment note or a comment folder moving anywhere in the vault
+		// (file explorer, quick switcher, sync, or the plugin's own rename box)
+		// all funnel through here, so the bookkeeping is identical in every case.
+		// Obsidian's `rename` event fires for moves as well as renames.
+		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
+			void (async () => {
+				this.store.dispatchRename(file, oldPath);
+				await this.store.whenIdle();
+				this.refreshOpenViews();
+			})();
+		}));
+
+		this.addCommand({
+			id: 'reorganise-comment-folders',
+			name: 'Move existing comment folders to the configured location',
+			callback: () => { void this.reorganiseCommentFolders(); },
+		});
 
 		// Claim .pdf extension from built-in viewer (viewRegistry is an undocumented Obsidian API)
 		(this.app as AppWithViewRegistry).viewRegistry.unregisterExtensions(['pdf']);
@@ -159,6 +190,67 @@ export default class PdfCommenterPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	/** Re-read sidecars into any open PDF view after files moved underneath it. */
+	refreshOpenViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PDF_COMMENTER)) {
+			const view = leaf.view;
+			if (view instanceof PdfCommenterView) void view.refreshAfterExternalChange();
+		}
+	}
+
+	/**
+	 * Changing a setting moves nothing on disk, so relocating existing comment
+	 * folders is an explicit, confirmed action rather than a side effect.
+	 */
+	async reorganiseCommentFolders(): Promise<void> {
+		let plan: MigrationPlan;
+		try {
+			plan = await this.store.planReorganisation();
+		} catch (e) {
+			new Notice(`PDF Commenter: could not plan the move — ${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
+
+		if (plan.moves.length === 0) {
+			const movable = plan.skips.filter(s => s.reason !== 'no-comments' && s.reason !== 'already-in-place');
+			if (movable.length === 0) {
+				new Notice('PDF Commenter: every comment folder is already in the right place.');
+				return;
+			}
+		}
+
+		new MigrationConfirmModal(this.app, plan, async () => {
+			const result = await this.store.runReorganisation(plan);
+			this.refreshOpenViews();
+			const failed = result.failed.length;
+			new Notice(
+				`PDF Commenter: moved ${result.moved.length} comment folder${result.moved.length === 1 ? '' : 's'}` +
+				(failed ? `, ${failed} could not be moved (see console).` : '.')
+			);
+			if (failed) console.warn('[pdf-commenter] failed moves:', result.failed);
+		}).open();
+	}
+
+	/**
+	 * Timestamp of the loaded main.js. The manifest version is identical in a
+	 * dev vault and a released install, so this is what tells you whether the
+	 * build you are looking at contains your unpushed work.
+	 */
+	getBuildStamp(): string | null {
+		try {
+			const adapter = this.app.vault.adapter;
+			if (!(adapter instanceof FileSystemAdapter)) return null;
+			const dir = (this.manifest as PluginManifest & { dir?: string }).dir;
+			if (!dir) return null;
+			const mtime = statSync(join(adapter.getBasePath(), dir, 'main.js')).mtime;
+			const pad = (n: number) => String(n).padStart(2, '0');
+			return `${mtime.getFullYear()}-${pad(mtime.getMonth() + 1)}-${pad(mtime.getDate())} ` +
+				`${pad(mtime.getHours())}:${pad(mtime.getMinutes())}:${pad(mtime.getSeconds())}`;
+		} catch {
+			return null;
+		}
+	}
+
 	applyAccent(): void {
 		const color = this.settings.useObsidianAccent
 			? getObsidianAccentHex()
@@ -192,6 +284,101 @@ export default class PdfCommenterPlugin extends Plugin {
 	}
 }
 
+/** Inline folder autocomplete for the comments-root text field. */
+class FolderSuggest extends AbstractInputSuggest<TFolder> {
+	constructor(app: App, private inputEl: HTMLInputElement) {
+		super(app, inputEl);
+	}
+
+	getSuggestions(query: string): TFolder[] {
+		const q = query.toLowerCase();
+		return this.app.vault
+			.getAllLoadedFiles()
+			.filter((f): f is TFolder => f instanceof TFolder && f.path !== '/')
+			.filter(f => f.path.toLowerCase().contains(q))
+			.slice(0, 50);
+	}
+
+	renderSuggestion(folder: TFolder, el: HTMLElement): void {
+		el.setText(folder.path);
+	}
+
+	selectSuggestion(folder: TFolder): void {
+		this.inputEl.value = folder.path;
+		this.inputEl.trigger('input');
+		this.close();
+	}
+}
+
+/**
+ * Shows exactly which folders will move and which will be left alone, with the
+ * reason, before anything is touched.
+ */
+class MigrationConfirmModal extends Modal {
+	constructor(app: App, private plan: MigrationPlan, private onConfirm: () => Promise<void>) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('h2', { text: 'Move comment folders' });
+
+		if (this.plan.moves.length === 0) {
+			contentEl.createEl('p', { text: 'Nothing can be moved. See the list below for why.' });
+		} else {
+			contentEl.createEl('p', {
+				text: `${this.plan.moves.length} comment folder${this.plan.moves.length === 1 ? '' : 's'} will be moved. ` +
+					'Links to the notes inside them are updated by Obsidian.',
+			});
+			const list = contentEl.createEl('ul', { cls: 'pdf-commenter-migration-list' });
+			for (const move of this.plan.moves) {
+				const li = list.createEl('li');
+				li.createEl('code', { text: move.from });
+				li.createSpan({ text: '  →  ' });
+				li.createEl('code', { text: move.to });
+			}
+		}
+
+		// "no comments yet" is noise here: nothing exists to move.
+		const notable = this.plan.skips.filter(s => s.reason !== 'no-comments' && s.reason !== 'already-in-place');
+		if (notable.length > 0) {
+			contentEl.createEl('h3', { text: 'Left alone' });
+			const list = contentEl.createEl('ul', { cls: 'pdf-commenter-migration-list' });
+			for (const skip of notable) {
+				const li = list.createEl('li');
+				li.createEl('code', { text: skip.from ?? skip.pdfPath });
+				li.createSpan({ text: ` — ${MIGRATION_SKIP_LABELS[skip.reason]}` });
+			}
+		}
+
+		const alreadyOk = this.plan.skips.filter(s => s.reason === 'already-in-place').length;
+		if (alreadyOk > 0) {
+			contentEl.createEl('p', {
+				cls: 'pdf-commenter-migration-note',
+				text: `${alreadyOk} folder${alreadyOk === 1 ? ' is' : 's are'} already in the right place.`,
+			});
+		}
+
+		new Setting(contentEl)
+			.addButton(btn => btn
+				.setButtonText('Cancel')
+				.onClick(() => this.close()))
+			.addButton(btn => btn
+				.setButtonText(`Move ${this.plan.moves.length} folder${this.plan.moves.length === 1 ? '' : 's'}`)
+				.setCta()
+				.setDisabled(this.plan.moves.length === 0)
+				.onClick(() => {
+					this.close();
+					void this.onConfirm();
+				}));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 class PdfCommenterSettingTab extends PluginSettingTab {
 	plugin: PdfCommenterPlugin;
 
@@ -203,6 +390,72 @@ class PdfCommenterSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		const build = this.plugin.getBuildStamp();
+		containerEl.createEl('p', {
+			cls: 'pdf-commenter-build-stamp',
+			text: `Version ${this.plugin.manifest.version}` + (build ? ` — build ${build}` : ''),
+		});
+
+		containerEl.createEl('h3', { text: 'Comment storage' });
+
+		let rootError: HTMLElement | null = null;
+		new Setting(containerEl)
+			.setName('Comments folder')
+			.setDesc('Vault-relative folder that all per-PDF comment folders live under. Leave empty for the vault root.')
+			.addText(text => {
+				text.setPlaceholder('e.g. Comments')
+					.setValue(this.plugin.settings.commentsRootFolder)
+					.onChange(async (value) => {
+						const result = validateRootFolder(value);
+						if (!result.ok) {
+							if (rootError) rootError.setText(result.error);
+							return;
+						}
+						const clash = this.app.vault.getAbstractFileByPath(result.path);
+						if (result.path && clash && !(clash instanceof TFolder)) {
+							if (rootError) rootError.setText('A file already exists at that path.');
+							return;
+						}
+						if (rootError) rootError.setText('');
+						this.plugin.settings.commentsRootFolder = result.path;
+						await this.plugin.saveSettings();
+					});
+				new FolderSuggest(this.app, text.inputEl);
+			});
+		rootError = containerEl.createEl('p', { cls: 'pdf-commenter-setting-error', text: '' });
+
+		new Setting(containerEl)
+			.setName('Mirror the vault folder structure')
+			.setDesc('Reproduce each PDF\'s own folder path inside the comments folder. Keeps two PDFs that share a filename in different folders from sharing one comment folder.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.mirrorVaultStructure)
+				.onChange(async (value) => {
+					this.plugin.settings.mirrorVaultStructure = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Follow PDF moves')
+			.setDesc('When a PDF is renamed or moved, relocate its comment folder to match. Comments keep working either way.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.followPdfMoves)
+				.onChange(async (value) => {
+					this.plugin.settings.followPdfMoves = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Move existing comment folders here')
+			.setDesc('Changing the settings above only affects PDFs commented on from now on. Use this to relocate the folders that already exist. You will see exactly what will move before anything is touched.')
+			.addButton(btn => btn
+				.setButtonText('Review and move')
+				.onClick(() => { void this.plugin.reorganiseCommentFolders(); })
+			);
+
+		containerEl.createEl('h3', { text: 'Appearance' });
 
 		new Setting(containerEl)
 			.setName('Use Obsidian accent colour')

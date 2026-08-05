@@ -1,30 +1,14 @@
-import { FileView, WorkspaceLeaf, TFile, TFolder, MarkdownRenderer, normalizePath, FileSystemAdapter } from 'obsidian';
+import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, normalizePath, FileSystemAdapter } from 'obsidian';
 import { WikilinkSuggest } from './wikilink-suggest';
 import { ContextMenuAction } from './context-menu';
 import type { IPDFViewer } from './pdf-viewer';
+import type { CommentStore } from './comment-store';
+import type { NormalizedRect, PageRects, PdfAnnotation, PdfAnnotationsFile } from './types';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import inlinedWorkerCode from 'virtual:pdf-worker';
 
 export const VIEW_TYPE_PDF_COMMENTER = 'pdf-commenter-view';
-
-type NormalizedRect = { x: number; y: number; w: number; h: number }; // 0..1 relative to page box
-type PageRects = { pageNumber: number; rects: NormalizedRect[] };
-type PdfAnnotation = {
-    id: string;
-    createdAt: number;
-    selectedText: string;
-    // Back-compat: older sidecars may have inline commentText. New flow uses notePath.
-    commentText?: string;
-    notePath?: string; // vault path to markdown note backing this comment
-    anchor: { pageNumber: number; yNorm: number };
-    highlights: PageRects[];
-};
-type PdfAnnotationsFile = {
-    version: 1;
-    pdfPath: string;
-    annotations: PdfAnnotation[];
-};
 
 // Narrow interface for accessing internal Obsidian app properties
 interface ObsidianAppInternal {
@@ -103,6 +87,7 @@ export class PdfCommenterView extends FileView {
     private isSyncingScroll = false;
     private pluginId: string;
     private pluginDir: string;
+    private store: CommentStore;
 
     private selectedAnnotationId: string | null = null;
     private activeInlineTextarea: HTMLTextAreaElement | null = null;
@@ -145,10 +130,11 @@ export class PdfCommenterView extends FileView {
     private searchHighlightEls: HTMLElement[] = [];
     private searchDebounceTimer: number | null = null;
 
-    constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string }) {
+    constructor(leaf: WorkspaceLeaf, opts: { pluginId: string; pluginDir: string; store: CommentStore }) {
         super(leaf);
         this.pluginId = opts.pluginId;
         this.pluginDir = opts.pluginDir;
+        this.store = opts.store;
     }
 
     getViewType(): string {
@@ -1241,11 +1227,7 @@ export class PdfCommenterView extends FileView {
                         return;
                     }
                 } else if (this.file) {
-                    const currentFile = this.file;
                     const p = (async () => {
-                        if (!this.currentPdfCommentsFolder) {
-                            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
-                        }
                         const note = await this.createCommentNote(a);
                         a.notePath = note.path;
                         await this.saveAnnotationsForCurrentPdf();
@@ -1469,17 +1451,7 @@ export class PdfCommenterView extends FileView {
     }
 
     private getAnnotationsPathForPdf(pdfPath: string): string {
-        return `${pdfPath}.mg-comments.json`;
-    }
-
-    private getPdfBaseName(pdfPath: string): string {
-        const parts = String(pdfPath ?? '').split('/').filter(Boolean);
-        const name = parts.length ? parts[parts.length - 1] : 'PDF';
-        return name.toLowerCase().endsWith('.pdf') ? name.slice(0, -4) : name;
-    }
-
-    private sanitizeVaultName(name: string): string {
-        return (name || 'Untitled').replace(/[\\/:*?"<>|]/g, '_').trim();
+        return this.store.sidecarPathFor(pdfPath);
     }
 
     private stripFrontmatter(md: string): { frontmatter: string; body: string } {
@@ -1562,30 +1534,27 @@ export class PdfCommenterView extends FileView {
         return { meta: '', userText: commentBody };
     }
 
-    private async ensurePerPdfFolder(pdfPath: string): Promise<string> {
-        const base = this.sanitizeVaultName(this.getPdfBaseName(pdfPath));
-        let candidate = normalizePath(base);
-        let i = 0;
-        while (true) {
-            const existing = this.app.vault.getAbstractFileByPath(candidate);
-            if (!existing) {
-                await this.app.vault.createFolder(candidate);
-                return candidate;
-            }
-            // If it exists and is a folder, reuse it
-            if (existing instanceof TFolder) return candidate;
-            i += 1;
-            candidate = normalizePath(`${base}_${i}`);
-        }
+    /**
+     * The folder this PDF's comment notes go in, created on demand.
+     *
+     * Deliberately lazy: merely opening a PDF must not litter the vault with an
+     * empty folder. It is resolved the first time a note is actually written.
+     */
+    private async ensureCommentsFolder(): Promise<string> {
+        if (this.currentPdfCommentsFolder) return this.currentPdfCommentsFolder;
+        if (!this.file) throw new Error('No current PDF file');
+        const folder = await this.store.resolveCommentsFolder(this.file.path, this.annotations);
+        this.currentPdfCommentsFolder = folder;
+        return folder;
     }
 
     private async createCommentNote(ann: PdfAnnotation): Promise<TFile> {
         if (!this.file) throw new Error('No current PDF file');
-        if (!this.currentPdfCommentsFolder) throw new Error('No comments folder');
+        const folder = await this.ensureCommentsFolder();
 
         const createdIso = new Date(ann.createdAt).toISOString().replace(/[:.]/g, '-');
         const fileName = `comment-${createdIso}-${ann.id}.md`;
-        const notePath = normalizePath(`${this.currentPdfCommentsFolder}/${fileName}`);
+        const notePath = normalizePath(`${folder}/${fileName}`);
 
         const frontmatter =
             `---\n` +
@@ -1665,12 +1634,15 @@ export class PdfCommenterView extends FileView {
         if (!this.file) return;
         const pdfPath = this.file.path;
 
+        // Resolved lazily by ensureCommentsFolder() when the first note is
+        // written, so opening a PDF never creates an empty folder.
+        this.currentPdfCommentsFolder = null;
+
         const sidecar = this.getAnnotationsPathForPdf(pdfPath);
         try {
             const af = this.app.vault.getAbstractFileByPath(sidecar);
             if (!(af instanceof TFile)) {
                 this.annotations = [];
-                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
                 return;
             }
 
@@ -1678,14 +1650,11 @@ export class PdfCommenterView extends FileView {
             const parsed = JSON.parse(raw) as PdfAnnotationsFile;
             if (parsed?.version !== 1 || parsed?.pdfPath !== pdfPath || !Array.isArray(parsed.annotations)) {
                 this.annotations = [];
-                this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
                 return;
             }
 
             this.annotations = parsed.annotations;
 
-            // Ensure per-PDF folder exists; migrate missing notePath by creating notes
-            this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(pdfPath);
             let dirty = false;
 
             // Prune orphaned annotations whose backing note was trashed
@@ -1708,6 +1677,25 @@ export class PdfCommenterView extends FileView {
             console.warn('[annotations] Failed to load annotations:', e);
             this.annotations = [];
         }
+    }
+
+    /**
+     * Re-read the sidecar after files moved underneath us (a rename from the
+     * file explorer, a folder move, the settings migration). The in-memory
+     * annotations hold note paths that may now be stale, and writing them back
+     * would undo the bookkeeping the store just did.
+     */
+    async refreshAfterExternalChange(): Promise<void> {
+        if (!this.file) return;
+        this.titleEl.textContent = this.file.basename;
+        this.currentPdfCommentsFolder = null;
+        // A comment being edited keeps its unsaved text; only paths are reloaded.
+        const data = await this.store.readSidecar(this.file.path);
+        if (data && data.pdfPath === this.file.path) {
+            this.annotations = data.annotations;
+        }
+        void this.renderCommentMarkers();
+        this.renderHighlights();
     }
 
     private async saveAnnotationsForCurrentPdf(): Promise<void> {
@@ -1923,11 +1911,7 @@ export class PdfCommenterView extends FileView {
 
         // Kick off note creation in the background so the UI is responsive immediately
         if (this.file) {
-            const currentFile = this.file;
             const createPromise = (async () => {
-                if (!this.currentPdfCommentsFolder) {
-                    this.currentPdfCommentsFolder = await this.ensurePerPdfFolder(currentFile.path);
-                }
                 const note = await this.createCommentNote(ann);
                 ann.notePath = note.path;
                 await this.saveAnnotationsForCurrentPdf();
@@ -2027,91 +2011,17 @@ export class PdfCommenterView extends FileView {
             return;
         }
 
-        const oldSidecarPath = this.getAnnotationsPathForPdf(oldPath);
-        const oldFolderPath = this.currentPdfCommentsFolder;
-
         try {
-            // 1. Rename the PDF file itself
+            // Rename the PDF file itself. Everything downstream -- the sidecar,
+            // the comment folder, the pdfPath and wikilink inside each comment
+            // note -- is handled by CommentStore via the vault rename event, so
+            // this path behaves identically to a rename done from the file
+            // explorer instead of from here.
             await this.app.fileManager.renameFile(file, newPath);
-
-            // 2. Rename the sidecar JSON and update pdfPath inside it
-            const oldSidecar = this.app.vault.getAbstractFileByPath(oldSidecarPath);
-            if (oldSidecar instanceof TFile) {
-                const newSidecarPath = this.getAnnotationsPathForPdf(newPath);
-                await this.app.fileManager.renameFile(oldSidecar, newSidecarPath);
-
-                // Update pdfPath stored inside the sidecar
-                const sidecarFile = this.app.vault.getAbstractFileByPath(newSidecarPath);
-                if (sidecarFile instanceof TFile) {
-                    const raw = await this.app.vault.read(sidecarFile);
-                    const parsed = JSON.parse(raw) as PdfAnnotationsFile;
-                    parsed.pdfPath = newPath;
-                    await this.app.vault.modify(sidecarFile, JSON.stringify(parsed, null, 2));
-                }
-            }
-
-            // 3. Rename the per-PDF comments folder
-            if (oldFolderPath) {
-                const oldFolder = this.app.vault.getAbstractFileByPath(oldFolderPath);
-                if (oldFolder instanceof TFolder) {
-                    const newFolderName = this.sanitizeVaultName(newBaseName);
-                    const newFolderPath = normalizePath(newFolderName);
-                    // Only rename if target doesn't already exist
-                    if (!this.app.vault.getAbstractFileByPath(newFolderPath)) {
-                        await this.app.fileManager.renameFile(oldFolder, newFolderPath);
-                        this.currentPdfCommentsFolder = newFolderPath;
-                    }
-                }
-            }
-
-            // 4. Update annotation notePaths to reflect renamed folder
-            if (oldFolderPath && this.currentPdfCommentsFolder && oldFolderPath !== this.currentPdfCommentsFolder) {
-                for (const ann of this.annotations) {
-                    if (ann.notePath?.startsWith(oldFolderPath + '/')) {
-                        ann.notePath = this.currentPdfCommentsFolder + ann.notePath.slice(oldFolderPath.length);
-                    }
-                }
-            }
-
-            // 5. Update pdfPath in all comment note frontmatter and wikilinks
-            await this.updateCommentNoteFrontmatter(oldPath, newPath);
-
-            // 6. Update the title display
-            this.titleEl.textContent = newBaseName;
-
+            await this.store.whenIdle();
+            await this.refreshAfterExternalChange();
         } catch (e) {
             console.error('[rename] Failed to rename PDF:', e);
-        }
-    }
-
-    private async updateCommentNoteFrontmatter(oldPdfPath: string, newPdfPath: string): Promise<void> {
-        for (const ann of this.annotations) {
-            if (!ann.notePath) continue;
-            const noteFile = this.app.vault.getAbstractFileByPath(ann.notePath);
-            if (!(noteFile instanceof TFile)) continue;
-
-            try {
-                const md = await this.app.vault.read(noteFile);
-                // Replace the pdfPath in frontmatter
-                const escapedOld = oldPdfPath.replace(/"/g, '\\"');
-                const escapedNew = newPdfPath.replace(/"/g, '\\"');
-                const updated = md.replace(
-                    `pdfPath: "${escapedOld}"`,
-                    `pdfPath: "${escapedNew}"`
-                );
-                // Also update the wikilink in the body if present
-                const oldLink = `[[${oldPdfPath}|`;
-                const newBaseName = newPdfPath.contains('/') ? newPdfPath.slice(newPdfPath.lastIndexOf('/') + 1) : newPdfPath;
-                const newDisplayName = newBaseName.toLowerCase().endsWith('.pdf') ? newBaseName.slice(0, -4) : newBaseName;
-                const newLink = `[[${newPdfPath}|${newDisplayName}`;
-                const finalContent = updated.split(oldLink).join(newLink);
-
-                if (finalContent !== md) {
-                    await this.app.vault.modify(noteFile, finalContent);
-                }
-            } catch (e) {
-                console.warn('[rename] failed to update note frontmatter:', ann.notePath, e);
-            }
         }
     }
 }

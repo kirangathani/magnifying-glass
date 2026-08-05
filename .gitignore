@@ -24,6 +24,9 @@ data.json
 # Exclude todo list
 todo.txt
 
+# Test harness build artefacts (source under tests/ is committed)
+tests/build
+
 # Mock harness build artefacts (source under mock/ is committed)
 mock/mock.js
 mock/pdf.worker.js
