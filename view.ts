@@ -1,6 +1,9 @@
 import { FileView, WorkspaceLeaf, TFile, MarkdownRenderer, Notice, normalizePath, FileSystemAdapter } from 'obsidian';
 import { WikilinkSuggest } from './wikilink-suggest';
 import { ContextMenuAction } from './context-menu';
+import { fitCollapsedPreviews } from './comment-fit';
+import { layoutMarkers } from './marker-layout';
+import { handleBracketKeydown } from './bracket-wrap';
 import type { IPDFViewer } from './pdf-viewer';
 import type { CommentStore } from './comment-store';
 import type { NormalizedRect, PageRects, PdfAnnotation, PdfAnnotationsFile } from './types';
@@ -111,6 +114,10 @@ export class PdfCommenterView extends FileView {
     private paneResizeRaf: number | null = null;
     private paneResizeObserver: ResizeObserver | null = null;
     private lastCommentsPaneWidth = 0;
+
+    // Live reflow while a comment is being edited
+    private activeMarkerResizeObserver: ResizeObserver | null = null;
+    private activeMarkerResizeRaf: number | null = null;
 
     // Promoted from onOpen locals so onLoadFile can access them
     private titleEl: HTMLHeadingElement;
@@ -607,6 +614,7 @@ export class PdfCommenterView extends FileView {
         }
         this.paneResizeObserver?.disconnect();
         this.paneResizeObserver = null;
+        this.disconnectActiveMarkerObserver();
 
         await super.onClose();
         if (this.pdfViewer) {
@@ -1069,9 +1077,10 @@ export class PdfCommenterView extends FileView {
 
     private async renderCommentMarkers(): Promise<void> {
         if (!this.commentsTrack || !this.pdfContainer) return;
+        // Every marker is rebuilt below, so the observer on the old one is stale.
+        // setupEditorInMarker re-arms it if a card is still selected.
+        this.disconnectActiveMarkerObserver();
         const gen = ++this.renderGeneration;
-
-        const MARKER_GAP = 10;
 
         // Phase 1: Compute ideal top positions
         const items: { annotation: PdfAnnotation; idealTop: number; markerEl: HTMLElement }[] = [];
@@ -1134,22 +1143,25 @@ export class PdfCommenterView extends FileView {
         await Promise.all(renderPromises);
         if (gen !== this.renderGeneration) { staging.remove(); return; } // stale render, bail
 
-        let nextAvailableTop = 0;
-        for (const item of items) {
-            const marker = item.markerEl;
-            const measuredHeight = marker.offsetHeight;
-            const placedTop = Math.max(item.idealTop, nextAvailableTop);
-            marker.setCssStyles({ top: `${placedTop}px` });
-            nextAvailableTop = placedTop + measuredHeight + MARKER_GAP;
-        }
-
-        // Atomic swap: remove old content, move new markers in
+        // Swap first, then measure: the staging container is off to the side and
+        // does not carry the pane's width, so text wraps differently inside it.
+        // Everything from here to the end of this function is synchronous, so
+        // nothing is painted between the swap and the final positions.
+        const staged: HTMLElement[] = [];
+        while (staging.firstChild) staged.push(staging.removeChild(staging.firstChild) as HTMLElement);
         this.commentsTrack.empty();
-        while (staging.firstChild) this.commentsTrack.appendChild(staging.firstChild);
+        for (const el of staged) this.commentsTrack.appendChild(el);
 
-        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
-            this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
+        // Snap collapsed cards to a whole line before their heights feed the sweep.
+        fitCollapsedPreviews(items.map(i => i.markerEl).filter(el => el.hasClass('is-collapsed')));
+
+        const { tops, contentBottom } = layoutMarkers(
+            items.map(item => ({ idealTop: item.idealTop, height: item.markerEl.offsetHeight })),
+        );
+        for (let i = 0; i < items.length; i++) {
+            items[i].markerEl.setCssStyles({ top: `${tops[i]}px` });
         }
+        this.applyCommentsTrackHeight(contentBottom);
 
         // Focus textarea after DOM is visible and positioned
         if (pendingFocusTextarea) {
@@ -1207,6 +1219,10 @@ export class PdfCommenterView extends FileView {
         })();
 
         textarea.addEventListener('click', (e) => e.stopPropagation());
+        // `[` wraps the selection (twice → [[wikilink]]), as in Obsidian's editor.
+        textarea.addEventListener('keydown', (e) => {
+            if (handleBracketKeydown(textarea, e)) e.preventDefault();
+        });
         textarea.addEventListener('input', () => {
             autoResize();
             saveBtn.disabled = false;
@@ -1292,20 +1308,38 @@ export class PdfCommenterView extends FileView {
         if (this.activeWikilinkSuggest) this.activeWikilinkSuggest.destroy();
         this.activeWikilinkSuggest = new WikilinkSuggest(this.app, textarea);
 
+        // The card grows as the textarea auto-resizes; keep the sweep in step.
+        this.observeActiveMarkerHeight(marker);
+
         return { loadPromise, textarea };
     }
 
     /** Set up a collapsed preview inside a marker. Returns the render promise. */
     private setupPreviewInMarker(marker: HTMLElement, a: PdfAnnotation): Promise<void> {
         const preview = marker.createDiv({ cls: 'pdf-comment-preview' });
-        return this.renderNotePreviewInto(a, preview);
+        // The clamp lives on an inner body so the card's bottom padding stays
+        // blank: padding inside an overflow:hidden box shows the clipped text
+        // through, which is what let a cut-off line peek out below the fold.
+        const body = preview.createDiv({ cls: 'pdf-comment-preview-body' });
+        return this.renderNotePreviewInto(a, body);
     }
 
-    /** Recalculate vertical positions of all markers in the comments track. */
-    private repositionMarkers(): void {
+    /**
+     * Recalculate vertical positions of all markers in the comments track.
+     *
+     * `refit` re-runs the collapsed-card clamp, which is only needed when the
+     * text may have rewrapped (a pane width change). A card merely growing as it
+     * is typed into changes no other card's wrapping, so the typing path skips
+     * it — the clamp pass walks every card's text nodes and is the expensive
+     * half of this function.
+     */
+    private repositionMarkers(opts?: { refit?: boolean }): void {
         if (!this.commentsTrack || !this.pdfContainer) return;
-        const MARKER_GAP = 10;
         const markers = Array.from(this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-marker'));
+
+        if (opts?.refit !== false) {
+            fitCollapsedPreviews(markers.filter(m => m.hasClass('is-collapsed')));
+        }
 
         // Build (marker, idealTop) pairs in annotation order
         const positioned: { el: HTMLElement; idealTop: number }[] = [];
@@ -1322,17 +1356,57 @@ export class PdfCommenterView extends FileView {
                 idealTop: pageEl.offsetTop + (ann.anchor.yNorm * pageEl.offsetHeight),
             });
         }
-        positioned.sort((a, b) => a.idealTop - b.idealTop);
 
-        let nextAvailableTop = 0;
-        for (const { el, idealTop } of positioned) {
-            const placedTop = Math.max(idealTop, nextAvailableTop);
-            el.setCssStyles({ top: `${placedTop}px` });
-            nextAvailableTop = placedTop + el.offsetHeight + MARKER_GAP;
+        const { tops, contentBottom } = layoutMarkers(
+            positioned.map(p => ({ idealTop: p.idealTop, height: p.el.offsetHeight })),
+        );
+        for (let i = 0; i < positioned.length; i++) {
+            positioned[i].el.setCssStyles({ top: `${tops[i]}px` });
         }
+        this.applyCommentsTrackHeight(contentBottom);
+    }
 
-        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
-            this.commentsTrack.setCssStyles({ height: `${nextAvailableTop}px` });
+    /**
+     * Size the track to whichever is taller: the PDF content or the cards. Set
+     * unconditionally, so a card shrinking back reclaims the space instead of
+     * leaving the pane scrollable past its last comment.
+     */
+    private applyCommentsTrackHeight(contentBottom: number): void {
+        if (!this.commentsTrack || !this.pdfContainer) return;
+        const height = Math.max(this.pdfContainer.scrollHeight, Math.ceil(contentBottom));
+        this.commentsTrack.setCssStyles({ height: `${height}px` });
+    }
+
+    /**
+     * Re-run the sweep while a card is being edited: the textarea auto-grows, so
+     * the cards below it have to move in step or they are overlapped. Throttled
+     * to one sweep per frame, since a burst of keystrokes lands in one frame.
+     */
+    private observeActiveMarkerHeight(marker: HTMLElement): void {
+        this.disconnectActiveMarkerObserver();
+        if (typeof ResizeObserver === 'undefined') return;
+
+        let lastHeight = marker.offsetHeight;
+        this.activeMarkerResizeObserver = new ResizeObserver(() => {
+            const height = marker.offsetHeight;
+            if (height === lastHeight) return;
+            lastHeight = height;
+            if (this.activeMarkerResizeRaf != null) return;
+            this.activeMarkerResizeRaf = requestAnimationFrame(() => {
+                this.activeMarkerResizeRaf = null;
+                // Heights changed, wrapping did not: no need to re-clamp previews.
+                this.repositionMarkers({ refit: false });
+            });
+        });
+        this.activeMarkerResizeObserver.observe(marker);
+    }
+
+    private disconnectActiveMarkerObserver(): void {
+        this.activeMarkerResizeObserver?.disconnect();
+        this.activeMarkerResizeObserver = null;
+        if (this.activeMarkerResizeRaf != null) {
+            cancelAnimationFrame(this.activeMarkerResizeRaf);
+            this.activeMarkerResizeRaf = null;
         }
     }
 
@@ -1390,6 +1464,7 @@ export class PdfCommenterView extends FileView {
             const newAnn = this.annotations.find(a => a.id === newId);
             newMarker.addClass('is-selected');
             newMarker.removeClass('is-collapsed');
+            newMarker.removeClass('is-truncated');
             const previewEl = newMarker.querySelector('.pdf-comment-preview');
             if (previewEl) previewEl.remove();
             if (newAnn) {

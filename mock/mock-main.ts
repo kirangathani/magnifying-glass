@@ -9,26 +9,69 @@
  */
 import './obsidian-shim';
 import { PDFViewerComponent } from '../pdf-viewer';
-
-const MARKER_GAP = 10;
+import { fitCollapsedPreviews } from '../comment-fit';
+import { handleBracketKeydown } from '../bracket-wrap';
+import { WikilinkSuggest } from '../wikilink-suggest';
+import { App } from 'obsidian';
+import { auditPreview, PreviewAudit } from './preview-audit';
+import { layoutMarkers } from '../marker-layout';
 
 type MockAnnotation = {
     id: string;
     pageNumber: number;
     yNorm: number;
-    text: string;
+    /** Rendered-markdown stand-in: the same element shapes MarkdownRenderer emits. */
+    html: string;
 };
 
-const LOREM = [
-    'Short note.',
-    'This comment is a little longer and will wrap onto two or three lines once the pane gets narrow enough to matter.',
-    'A much longer comment intended to stress the collision layout: it should occupy a tall card, pushing subsequent markers downward and revealing whether the greedy sweep reflows correctly when the pane width changes and the text rewraps to a different number of lines.',
-    'Medium length remark about the paragraph above.',
-    'Another one.',
-    'Comments anchored close together on the same page are the interesting case for collision prevention, because their ideal tops are only a few pixels apart.',
+const SENTENCE =
+    'Comparative analysis of the extraction conditions showed measurable differences between the two preparations across every replicate.';
+
+/**
+ * Content matrix for the fitting rules: card heights either side of the 9-line
+ * budget, mixed line heights, unbreakable tokens, and an atomic block.
+ */
+const CONTENT: string[] = [
+    // 1 line: no clamp, no chevron.
+    '<p>Short note.</p>',
+    // ~4 lines at default pane width.
+    `<p>${SENTENCE}</p>`,
+    // Well over the budget: clamp + chevron.
+    `<p>${SENTENCE} ${SENTENCE} ${SENTENCE} ${SENTENCE} ${SENTENCE}</p>`,
+    // Mixed line heights: the clamp must not land inside the list.
+    `<h3>Method</h3><p>${SENTENCE}</p><ul><li>Steeping time held constant.</li>` +
+        `<li>Leaf mass measured to two decimal places.</li><li>${SENTENCE}</li></ul>`,
+    // Long unbreakable tokens: allowed to break mid-token, nothing else.
+    '<p>See https://example.com/very/long/path/that/cannot/be/broken/at/any/space/segment-one-two-three ' +
+        'and Dutta_et_al_2024_comparative_analysis_green_blue_tea_west_bengal.pdf for the source data.</p>',
+    // Just under the budget (8 short lines).
+    '<p>Line one here.<br>Line two here.<br>Line three here.<br>Line four here.<br>' +
+        'Line five here.<br>Line six here.<br>Line seven here.<br>Line eight here.</p>',
+    // Atomic block with no line boxes of its own, below the budget's worth of text.
+    `<p>${SENTENCE} ${SENTENCE}</p><svg width="80" height="80"><rect width="80" height="80" fill="#fff"/></svg>`,
+    // Wikilink-bearing card, to keep the rendered-link path exercised.
+    `<p>Cross-reference: <a class="internal-link" href="#">Green tea</a>. ${SENTENCE}</p>`,
+];
+
+/**
+ * The real annotation set from Sandbox/CyanoCapture_BSA_TPP.pdf, verbatim from
+ * its sidecar and comment notes. Loaded with `?fixture=bsa` so the reported
+ * misalignment can be reproduced and measured rather than argued about.
+ */
+const BSA_TPP_FIXTURE: MockAnnotation[] = [
+    { id: 'bsa-0', pageNumber: 1, yNorm: 0.04395699786324787,
+        html: '<p>Hello. I am testing a comment here.<br>Testing this comment</p>' },
+    { id: 'bsa-1', pageNumber: 1, yNorm: 0.2580528846153846,
+        html: '<p>Hello! This is a test comment.<br>Testing.<br>Still Testing!<br>Still testing the comment<br>Still doing the tests</p><p>Testinf!!!</p>' },
+    { id: 'bsa-2', pageNumber: 1, yNorm: 0.2580528846153846, html: '<p>Test!</p>' },
+    { id: 'bsa-3', pageNumber: 1, yNorm: 0.3298076923076923, html: '<p>Test</p>' },
+    { id: 'bsa-4', pageNumber: 1, yNorm: 0.3298076923076923,
+        html: '<p>testing MOVEMENT</p><p>jnlk<br>nlkl<br>jjklkn<br>kknkkl<br>jll<br>ljnl<br>llnlnk<br>knl</p>' },
+    { id: 'bsa-5', pageNumber: 1, yNorm: 0.3298076923076923, html: '<p>Hello</p>' },
 ];
 
 function buildAnnotations(pageCount: number): MockAnnotation[] {
+    if (location.search.includes('bsa')) return BSA_TPP_FIXTURE.filter(a => a.pageNumber <= pageCount);
     const out: MockAnnotation[] = [];
     let n = 0;
     const spec: Array<[number, number]> = [
@@ -41,7 +84,7 @@ function buildAnnotations(pageCount: number): MockAnnotation[] {
             id: `mock-${n}`,
             pageNumber: page,
             yNorm,
-            text: LOREM[n % LOREM.length],
+            html: CONTENT[n % CONTENT.length],
         });
         n += 1;
     }
@@ -62,6 +105,11 @@ class MockHarness {
     private selectedId: string | null = null;
     private isSyncingScroll = false;
     private isZooming = false;
+    private activeSuggest: WikilinkSuggest | null = null;
+    private activeTextarea: HTMLTextAreaElement | null = null;
+    private activeMarkerObserver: ResizeObserver | null = null;
+    private activeMarkerRaf: number | null = null;
+    private suggestApp = new App();
 
     constructor(root: HTMLElement) {
         this.root = root;
@@ -324,6 +372,7 @@ class MockHarness {
 
     /** Mirrors view.ts renderCommentMarkers() layout maths with fake content. */
     renderCommentMarkers(): void {
+        this.disconnectActiveMarkerObserver();
         this.commentsTrack.empty();
         const items: { ann: MockAnnotation; idealTop: number; el: HTMLElement }[] = [];
         for (const a of this.annotations) {
@@ -341,8 +390,13 @@ class MockHarness {
             if (!isSelected) marker.classList.add('is-collapsed');
             marker.classList.toggle('is-selected', isSelected);
             marker.dataset.annotationId = item.ann.id;
-            const preview = marker.createDiv({ cls: 'pdf-comment-preview' });
-            preview.textContent = item.ann.text;
+            if (isSelected) {
+                this.buildEditor(marker, item.ann);
+            } else {
+                const preview = marker.createDiv({ cls: 'pdf-comment-preview' });
+                const body = preview.createDiv({ cls: 'pdf-comment-preview-body' });
+                body.innerHTML = item.ann.html;
+            }
             marker.addEventListener('click', () => {
                 this.selectedId = this.selectedId === item.ann.id ? null : item.ann.id;
                 this.renderCommentMarkers();
@@ -350,20 +404,163 @@ class MockHarness {
             item.el = marker;
         }
 
-        let nextAvailableTop = 0;
-        for (const item of items) {
-            const placedTop = Math.max(item.idealTop, nextAvailableTop);
-            item.el.style.top = `${placedTop}px`;
-            nextAvailableTop = placedTop + item.el.offsetHeight + MARKER_GAP;
-        }
-        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
-            this.commentsTrack.style.height = `${nextAvailableTop}px`;
+        // Same fitting pass the plugin runs (comment-fit.ts).
+        fitCollapsedPreviews(items.map(i => i.el).filter(el => el.classList.contains('is-collapsed')));
+
+        const { tops, contentBottom } = layoutMarkers(
+            items.map(i => ({ idealTop: i.idealTop, height: i.el.offsetHeight })),
+        );
+        items.forEach((item, i) => { item.el.style.top = `${tops[i]}px`; });
+        this.applyTrackHeight(contentBottom);
+    }
+
+    /** Mirrors view.ts applyCommentsTrackHeight(). */
+    private applyTrackHeight(contentBottom: number): void {
+        const height = Math.max(this.pdfContainer.scrollHeight, Math.ceil(contentBottom));
+        this.commentsTrack.style.height = `${height}px`;
+    }
+
+    /**
+     * Real textarea for the selected card, wired exactly as view.ts wires it, so
+     * the bracket-wrap keystrokes can be driven from DevTools.
+     */
+    private buildEditor(marker: HTMLElement, ann: MockAnnotation): void {
+        const editor = marker.createDiv({ cls: 'pdf-comment-inline-editor' });
+        const textarea = editor.createEl('textarea', { cls: 'pdf-comment-inline-textarea' });
+        textarea.setAttribute('rows', '3');
+        textarea.setAttribute('placeholder', 'Write a comment… (supports [[backlinks]])');
+        textarea.value = ann.html.replace(/<[^>]+>/g, '');
+        editor.createDiv({ cls: 'pdf-comment-inline-footer' })
+            .createEl('button', { cls: 'pdf-comment-inline-save', text: 'Save' });
+
+        textarea.addEventListener('click', (e) => e.stopPropagation());
+        textarea.addEventListener('keydown', (e) => {
+            if (handleBracketKeydown(textarea, e)) e.preventDefault();
+        });
+        textarea.addEventListener('input', () => {
+            textarea.style.height = 'auto';
+            textarea.style.height = `${textarea.scrollHeight}px`;
+        });
+
+        this.activeSuggest?.destroy();
+        this.activeSuggest = new WikilinkSuggest(this.suggestApp, textarea);
+        this.activeTextarea = textarea;
+        this.observeActiveMarkerHeight(marker);
+    }
+
+    /** Mirrors view.ts observeActiveMarkerHeight(): live reflow while typing. */
+    private observeActiveMarkerHeight(marker: HTMLElement): void {
+        this.disconnectActiveMarkerObserver();
+        let lastHeight = marker.offsetHeight;
+        this.activeMarkerObserver = new ResizeObserver(() => {
+            const height = marker.offsetHeight;
+            if (height === lastHeight) return;
+            lastHeight = height;
+            if (this.activeMarkerRaf != null) return;
+            this.activeMarkerRaf = requestAnimationFrame(() => {
+                this.activeMarkerRaf = null;
+                this.sweepCount += 1;
+                this.repositionMarkers({ refit: false });
+            });
+        });
+        this.activeMarkerObserver.observe(marker);
+    }
+
+    private disconnectActiveMarkerObserver(): void {
+        this.activeMarkerObserver?.disconnect();
+        this.activeMarkerObserver = null;
+        if (this.activeMarkerRaf != null) {
+            cancelAnimationFrame(this.activeMarkerRaf);
+            this.activeMarkerRaf = null;
         }
     }
 
+    /** Sweeps triggered by the live-typing observer, for throttling assertions. */
+    sweepCount = 0;
+
+    /** Marker tops keyed by annotation id, for before/after comparisons. */
+    markerTops(): Record<string, number> {
+        const out: Record<string, number> = {};
+        for (const el of Array.from(this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-marker'))) {
+            out[el.dataset.annotationId ?? ''] = Math.round(parseFloat(el.style.top) || 0);
+        }
+        return out;
+    }
+
+    /** Track height versus the PDF content height, for the shrink-back check. */
+    trackHeights(): Record<string, number> {
+        return {
+            track: Math.round(parseFloat(this.commentsTrack.style.height) || 0),
+            pdfScrollHeight: this.pdfContainer.scrollHeight,
+        };
+    }
+
+    /**
+     * Where each card sits versus where its anchor says it should sit.
+     * `drift` is how far the collision sweep pushed it off its anchor.
+     */
+    alignmentReport(): Array<Record<string, number | string>> {
+        const rows: Array<Record<string, number | string>> = [];
+        for (const a of this.annotations) {
+            const marker = this.commentsTrack.querySelector<HTMLElement>(
+                `.pdf-comment-marker[data-annotation-id="${a.id}"]`
+            );
+            const pageEl = this.pdfContainer.querySelector<HTMLElement>(
+                `.pdf-page-container[data-page-number="${a.pageNumber}"]`
+            );
+            if (!marker || !pageEl) continue;
+            const idealTop = pageEl.offsetTop + a.yNorm * pageEl.offsetHeight;
+            const placedTop = parseFloat(marker.style.top) || 0;
+            rows.push({
+                id: a.id,
+                yNorm: +a.yNorm.toFixed(4),
+                height: marker.offsetHeight,
+                idealTop: Math.round(idealTop),
+                placedTop: Math.round(placedTop),
+                drift: Math.round(placedTop - idealTop),
+            });
+        }
+        return rows.sort((x, y) => (x.idealTop as number) - (y.idealTop as number));
+    }
+
+    /** Per-card measurements for the collapsed-card fitting rules. */
+    auditPreviews(): PreviewAudit[] {
+        const markers = Array.from(this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-marker.is-collapsed'));
+        return markers.map(m => auditPreview(m)).filter((a): a is PreviewAudit => a !== null);
+    }
+
+    /** One-line verdict: every fitting invariant across the current layout. */
+    auditSummary(): Record<string, number | boolean> {
+        const audits = this.auditPreviews();
+        return {
+            cards: audits.length,
+            chevronMismatches: audits.filter(a => a.chevronShown !== a.truncated).length,
+            straddlingLines: audits.reduce((n, a) => n + a.straddlingLines, 0),
+            midWordBreaks: audits.reduce((n, a) => n + a.midWordBreaks, 0),
+            chevronsShown: audits.filter(a => a.chevronShown).length,
+            markerOverlaps: this.countMarkerOverlaps(),
+            pass:
+                audits.every(a => a.chevronShown === a.truncated && a.straddlingLines === 0 && a.midWordBreaks === 0) &&
+                this.countMarkerOverlaps() === 0,
+        };
+    }
+
+    /** Select a card by index so the editor (and bracket wrapping) can be driven. */
+    selectCard(index: number): HTMLTextAreaElement | null {
+        const ann = this.annotations[index];
+        if (!ann) return null;
+        this.selectedId = ann.id;
+        this.renderCommentMarkers();
+        this.activeTextarea?.focus();
+        return this.activeTextarea;
+    }
+
     /** Mirrors view.ts repositionMarkers(): re-measure heights, re-run the sweep. */
-    repositionMarkers(): void {
+    repositionMarkers(opts?: { refit?: boolean }): void {
         const markers = Array.from(this.commentsTrack.querySelectorAll<HTMLElement>('.pdf-comment-marker'));
+        if (opts?.refit !== false) {
+            fitCollapsedPreviews(markers.filter(m => m.classList.contains('is-collapsed')));
+        }
         const positioned: { el: HTMLElement; idealTop: number }[] = [];
         for (const marker of markers) {
             const ann = this.annotations.find(a => a.id === marker.dataset.annotationId);
@@ -374,17 +571,12 @@ class MockHarness {
             if (!pageEl) continue;
             positioned.push({ el: marker, idealTop: pageEl.offsetTop + ann.yNorm * pageEl.offsetHeight });
         }
-        positioned.sort((a, b) => a.idealTop - b.idealTop);
 
-        let nextAvailableTop = 0;
-        for (const { el, idealTop } of positioned) {
-            const placedTop = Math.max(idealTop, nextAvailableTop);
-            el.style.top = `${placedTop}px`;
-            nextAvailableTop = placedTop + el.offsetHeight + MARKER_GAP;
-        }
-        if (nextAvailableTop > this.pdfContainer.scrollHeight) {
-            this.commentsTrack.style.height = `${nextAvailableTop}px`;
-        }
+        const { tops, contentBottom } = layoutMarkers(
+            positioned.map(p => ({ idealTop: p.idealTop, height: p.el.offsetHeight })),
+        );
+        positioned.forEach((p, i) => { p.el.style.top = `${tops[i]}px`; });
+        this.applyTrackHeight(contentBottom);
     }
 
     /** Geometry snapshot used to verify the horizontal-scroll fix (todo item 2). */

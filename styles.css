@@ -266,6 +266,9 @@ body.pdf-commenter-dark {
 .pdf-comment-marker.is-selected {
     outline: 2px solid var(--pdc-selected-outline);
     outline-offset: 2px;
+    /* The editor grows as you type; the sweep reflows its neighbours a frame
+       later, so keep it above them rather than letting DOM order hide it. */
+    z-index: 1;
 }
 
 .pdf-comment-marker.is-collapsed {
@@ -278,12 +281,33 @@ body.pdf-commenter-dark {
     padding: 8px 28px 8px 10px;
     font-size: 13px;
     line-height: 1.4;
-    /* 9 lines: 9 * (13px * 1.4) = 163.8px + 16px vertical padding (8px top + 8px bottom) */
-    max-height: calc(9 * 1.4em + 16px);
     position: relative;
 }
 
-.pdf-comment-marker.is-collapsed .pdf-comment-preview::after {
+/* The clamp sits on the inner body, never on the padded card: bottom padding
+   inside an overflow:hidden box does not mask anything, so a clamp on the card
+   leaves the next line of text showing through it. */
+.pdf-comment-marker.is-collapsed .pdf-comment-preview-body {
+    overflow: hidden;
+    /* Fallback for the frame before comment-fit.ts measures: 9 lines
+       (9 * 13px * 1.4 = 163.8px). The fitting pass replaces this with a height
+       snapped to the last line box that fits whole. */
+    max-height: calc(9 * 1.4em);
+}
+
+/* Rendered markdown blocks otherwise carry margins that push the text off a
+   regular line grid, which is what made the clamp land mid-line. */
+.pdf-comment-marker.is-collapsed .pdf-comment-preview-body > * {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.pdf-comment-marker.is-collapsed .pdf-comment-preview-body > * + * {
+    margin-top: 1.4em;
+}
+
+/* Chevron: only when the fitting pass found content hidden below the clamp. */
+.pdf-comment-marker.is-collapsed.is-truncated .pdf-comment-preview::after {
     content: '';
     position: absolute;
     bottom: 6px;
@@ -301,7 +325,8 @@ body.pdf-commenter-dark {
     line-height: 1.4;
 }
 
-.pdf-comment-marker:not(.is-collapsed) .pdf-comment-preview {
+.pdf-comment-marker:not(.is-collapsed) .pdf-comment-preview,
+.pdf-comment-marker:not(.is-collapsed) .pdf-comment-preview-body {
     overflow: visible;
     max-height: none;
 }
@@ -316,21 +341,27 @@ body.pdf-commenter-dark {
     min-height: 0;
     color: var(--pdc-card-text);
     font-family: Consolas, "Courier New", monospace;
+    overflow-wrap: break-word;
+    word-break: normal;
 }
 
-.pdf-comment-preview > *:first-child {
+.pdf-comment-preview > *:first-child,
+.pdf-comment-preview-body > *:first-child {
     margin-top: 0;
 }
 
-.pdf-comment-preview > *:last-child {
+.pdf-comment-preview > *:last-child,
+.pdf-comment-preview-body > *:last-child {
     margin-bottom: 0;
 }
 
 .pdf-comment-preview * {
     color: var(--pdc-card-text);
     font-family: Consolas, "Courier New", monospace;
+    /* Break between words; only a single word wider than the card breaks
+       mid-word (break-all used to split every line at an arbitrary character). */
     overflow-wrap: break-word;
-    word-break: break-all;
+    word-break: normal;
 }
 
 .pdf-comment-preview a.internal-link {

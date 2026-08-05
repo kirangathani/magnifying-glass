@@ -22,7 +22,11 @@ All source files are in the repo root (no `src/` directory).
 | `settings.ts` | `PdfCommenterSettings` shape and `DEFAULT_SETTINGS`. Separate from `main.ts` so `view.ts`/`comment-store.ts` can depend on the type without a circular import. |
 | `comment-paths.ts` | Pure path arithmetic: comment-folder targets, root validation, prefix-safe rewriting, migration planning. Imports nothing from `obsidian`, so it is unit-testable. |
 | `comment-store.ts` | All vault reads/writes for sidecars and comment folders. Single owner of the PDF ↔ sidecar ↔ folder ↔ note relationship, so a rename from the plugin UI and one from the file explorer run identical code. |
-| `tests/` | `node --test` suite over `comment-paths.ts` and `comment-store.ts` (the latter against an in-memory vault mock in `tests/vault-mock.ts`, with `obsidian` aliased to `tests/obsidian-stub.ts`). |
+| `comment-fit.ts` | Collapsed-card height fitting: measures line boxes, snaps the clamp to the last whole line, and flags truncation so the chevron only appears when text is hidden. Pure decision function (`chooseClampHeight`) plus DOM helpers; no `obsidian` import, so the mock harness reuses it. |
+| `bracket-wrap.ts` | Obsidian-style `[` wrapping of a textarea selection (press twice for `[[wikilinks]]`). Pure `wrapSelection` plus a DOM applier that keeps the native undo stack. |
+| `marker-layout.ts` | The comment-card collision sweep (`layoutMarkers`): each card at its anchor, pushed down only where cards would overlap. Pure and stateless, shared by `view.ts` and the mock. |
+| `tests/` | `node --test` suite over `comment-paths.ts`, `comment-store.ts`, `comment-fit.ts` and `bracket-wrap.ts` (the store runs against an in-memory vault mock in `tests/vault-mock.ts`, with `obsidian` aliased to `tests/obsidian-stub.ts`). |
+| `mock/` | Standalone browser harness (see `mock/README.md`). Runs the real viewer, the real fitting pass and the real bracket wrapping outside Obsidian so layout rules can be asserted in a real layout engine. |
 | `manifest.json` | Plugin id `pdf-commenter`, name `PDF Commenter`. `minAppVersion: 0.15.0`, `isDesktopOnly: true`. |
 
 ## Build & Dev
@@ -82,9 +86,32 @@ Two-phase zoom for pinch-to-zoom:
 
 Button zoom (+/- 0.25 steps) skips the preview phase and goes directly to commit. Scale range: 0.5–3.0, default 1.5.
 
+### Collapsed Comment Cards
+
+A collapsed card shows at most 9 lines. The clamp is applied by `comment-fit.ts` after render, not by CSS alone, because CSS cannot tell where the last fully visible line ends or whether anything is hidden:
+
+- The clamp lives on an inner `.pdf-comment-preview-body`, never on the padded `.pdf-comment-preview`. Bottom padding inside an `overflow: hidden` box masks nothing — clamping the padded card leaves the next line visible inside the padding.
+- Boundaries are measured with `Range.getClientRects()` over text nodes (plus atomic blocks such as images), so mixed line heights from headings and lists are handled. Note these are glyph rects, ~2–3px shorter than the line box.
+- The clamp snaps down to the lowest boundary that fits, so a line is never cut in half. Card heights therefore vary by up to one line — deliberate.
+- `.is-truncated` on the marker is what draws the chevron, so it appears only when a boundary sits below the clamp. A card whose overflow is pure trailing margin gets no chevron.
+- The pass is re-run from `repositionMarkers()`, the single re-layout entry point (pane drag, `ResizeObserver`, `swapSelection`), because rewrapped text changes both the clamp point and whether anything is hidden.
+
+### Marker Layout
+
+`layoutMarkers()` (`marker-layout.ts`) places each card at `pageEl.offsetTop + yNorm * pageEl.offsetHeight` and pushes a card down only when it would overlap the one above, leaving a 10px gap. It is **stateless** — recomputed from the ideal tops on every run — so growth is never ratcheted in: a card that grows while being edited pushes its neighbours down, and they return to their anchors when it shrinks.
+
+Consequence worth knowing: several comments anchored to the same line of the PDF cannot all sit beside it, and since displacement is downward-only it accumulates. Measured on `Sandbox/CyanoCapture_BSA_TPP.pdf`, where three comments share one anchor, the last card sits 388px below its highlight. The stored anchors are exact (`yNorm` equals the highlight-rect centre); this is the layout policy, not a bug. `mock/index.html?fixture=bsa` reproduces it, and `mock.alignmentReport()` measures the drift.
+
+Three call sites drive the sweep:
+- `renderCommentMarkers()` — full rebuild; swaps the staged cards into the live track *before* measuring, because `.pdf-comments-staging` is 0px wide (a card measures 6 × 186 there versus 293 × 77 live).
+- `repositionMarkers({ refit })` — pane width changes (`refit: true`, re-runs the collapsed-card clamp) and live editing (`refit: false`, heights changed but wrapping did not).
+- `observeActiveMarkerHeight()` — a `ResizeObserver` on the selected card, rAF-throttled to one sweep per frame, so a growing editor reflows its neighbours as you type. Observing the card rather than hooking `input` also covers paste, suggester insertion, undo and IME.
+
+The track height is `max(pdfContainer.scrollHeight, lastCardBottom)`, applied unconditionally so shrinking text reclaims the space.
+
 ### Scroll Sync
 
-The comments pane and PDF container have synchronised scroll positions. The comments track height matches `pdfContainer.scrollHeight`. Comment markers are absolutely positioned based on the target page element's `offsetTop + yNorm * offsetHeight`.
+The comments pane and PDF container have synchronised scroll positions. Comment markers are absolutely positioned in `.pdf-comments-track`, whose coordinate space matches the PDF container's scroll space.
 
 ### PDF.js Worker Loading
 
@@ -92,7 +119,7 @@ The worker file cannot be loaded via `plugin:` URLs due to CORS restrictions in 
 
 ## Known Issues / Debt
 
-- No automated tests for the view layer (UI, zoom, scroll sync); `comment-paths.ts` and `comment-store.ts` are covered by `npm test`.
+- No automated tests for the view layer (UI, zoom, scroll sync); `comment-paths.ts`, `comment-store.ts`, `comment-fit.ts` and `bracket-wrap.ts` are covered by `npm test`. Layout rules that need a real layout engine are asserted in the mock harness via `mock.auditSummary()` (jsdom has no line boxes, so it cannot check them).
 - No way to delete a comment that already has content.
 - No error recovery if sidecar JSON is corrupted.
 - Annotations are tied to absolute text positions; replacing the PDF with a different version silently misaligns them.

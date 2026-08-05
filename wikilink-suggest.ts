@@ -141,6 +141,12 @@ export class WikilinkSuggest {
 	}
 
 	private onInput(): void {
+		// A live selection means the edit was a bracket wrap, not typing — the
+		// user is not mid-query, so do not pop the suggester.
+		if (this.textarea.selectionStart !== this.textarea.selectionEnd) {
+			this.hide();
+			return;
+		}
 		const trigger = this.getTrigger();
 		if (!trigger) {
 			this.hide();

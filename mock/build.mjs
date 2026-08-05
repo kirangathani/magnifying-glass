@@ -18,6 +18,8 @@ const ctx = await esbuild.context({
     format: 'iife',
     target: 'es2018',
     outfile: path.join(here, 'mock.js'),
+    // WikilinkSuggest imports the plugin API; the harness needs a stand-in.
+    alias: { obsidian: path.join(here, 'obsidian-stub.ts') },
     sourcemap: 'inline',
     logLevel: 'info',
 });
